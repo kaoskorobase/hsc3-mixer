@@ -8,20 +8,23 @@ module Sound.SC3.Server.Resource
   , fork
   , MonadIO
   , liftIO
-  , SendT
-  , send
-  , defer
-  , async
-  , sync
-  , syncWith
+  -- * Master controls
+  , status
+  , PrintLevel(..)
+  , dumpOSC
+  -- * Resources
   , Resource(..)
+  -- ** Nodes
   , Node(..)
   , n_free
+  , n_query
   , AddAction(..)
+  -- *** Synths
   , Synth(..)
   , s_new
   , s_new_
   , s_release
+  -- *** Groups
   , Group(..)
   , rootNode
   , g_new
@@ -30,6 +33,17 @@ module Sound.SC3.Server.Resource
   , g_freeAll
   , g_head
   , g_tail
+  -- ** Buffers
+  , Buffer
+  , b_alloc
+  , b_read
+  , HeaderFormat(..)
+  , SampleFormat(..)
+  , b_write
+  , b_free
+  , b_zero
+  , b_query
+  -- ** Buses
   , Bus
   , busId
   , numChannels
@@ -39,68 +53,32 @@ module Sound.SC3.Server.Resource
   , newControlBus
   ) where
 
-import Control.Applicative
-import Control.Monad (liftM, unless, void)
-import Control.Monad.IO.Class (MonadIO, liftIO)
-import Control.Monad.Trans.Class (lift)
-import Control.Monad.Trans.Writer (WriterT(..), tell)
-import           Data.DList (DList)
-import qualified Data.DList as DList
+import           Control.Applicative
+import           Control.Monad (liftM, unless, void)
+import           Control.Monad.IO.Class (MonadIO, liftIO)
+import           Data.Sequence (Seq)
+import qualified Data.Sequence as Seq
 import           Sound.SC3 (Rate(..))
 import           Sound.SC3.Server.Monad (Server, ServerT, BufferId, BusId, NodeId, fork)
 import qualified Sound.SC3.Server.Monad as M
 import           Sound.SC3.Server.Allocator.Range (Range)
 import qualified Sound.SC3.Server.Allocator.Range as Range
 import qualified Sound.SC3.Server.State as State
-import           Sound.SC3.Server.Command (AddAction(..))
+import           Sound.SC3.Server.Command (AddAction(..), PrintLevel(..))
 import qualified Sound.SC3.Server.Command as C
+import qualified Sound.SC3.Server.Command.Completion as C
 import qualified Sound.SC3.Server.Notification as N
-import Sound.OpenSoundControl (OSC(..), Time, immediately)
+import           Sound.SC3.Server.Send
+import           Sound.OpenSoundControl (OSC(..), Time, immediately)
 
 -- ====================================================================
--- SendT
+-- Master controls
 
-newtype SendT m a = SendT { unSendT :: WriterT (DList (Either OSC (ServerT m ()))) (ServerT m) a }
-                    deriving (Functor, Monad)
+status :: MonadIO m => ServerT m N.Status
+status = M.syncWith C.status N.status_reply
 
-liftServer :: Monad m => ServerT m a -> SendT m a
-liftServer = SendT . lift
-
-send :: Monad m => OSC -> SendT m ()
-send = SendT . tell . DList.singleton . Left
-
-sendList :: Monad m => [OSC] -> SendT m ()
-sendList = mapM_ send
-
-cleanup :: Monad m => ServerT m () -> SendT m ()
-cleanup = SendT . tell . DList.singleton . Right
-
-defer :: Monad m => Time -> SendT m a -> ServerT m (a, (OSC, ServerT m ()))
-defer t (SendT w) = do
-    (a, dl) <- runWriterT w
-    let l = DList.toList dl
-    return (a, (Bundle t [ x | Left x <- l ], sequence_ [ x | Right x <- l ]))
-
-async :: MonadIO m => Time -> SendT m a -> ServerT m a
-async t s = do
-    (a, (osc, action)) <- defer t s
-    M.async osc
-    action
-    return a
-
-sync :: MonadIO m => Time -> SendT m a -> ServerT m a
-sync t s = do
-    (a, (osc, action)) <- defer t s
-    M.sync osc
-    action
-    return a
-
-syncWith :: MonadIO m => Time -> SendT m a -> N.Notification b -> ServerT m (a, b)
-syncWith t s n = do
-    (a, (osc, action)) <- defer t s
-    b <- M.syncWith osc n
-    action
-    return (a, b)
+dumpOSC :: MonadIO m => PrintLevel -> ServerT m ()
+dumpOSC p = M.sync (C.dumpOSC p)
 
 -- ====================================================================
 -- Resource
@@ -116,8 +94,11 @@ class Node a where
 
 n_free :: (Node a, MonadIO m) => a -> SendT m ()
 n_free n = do
-    send $ C.n_free [fromIntegral (nodeId n)]
-    cleanup $ M.free M.nodeIdAllocator (nodeId n)
+    sendOSC $ C.n_free [fromIntegral (nodeId n)]
+    lift $ M.free M.nodeIdAllocator (nodeId n)
+
+n_query :: (Node a, MonadIO m) => a -> ServerT m N.NodeNotification
+n_query n = M.syncWith (C.n_query [(fromIntegral (nodeId n))]) (N.n_info (nodeId n))
 
 -- ====================================================================
 -- Synth
@@ -128,22 +109,22 @@ instance Node Synth where
     nodeId (Synth nid) = nid
 
 instance Resource Synth where
-    free = async immediately . n_free
+    free = send immediately . n_free
 
 s_new :: MonadIO m => String -> AddAction -> Group -> [(String, Double)] -> SendT m Synth
 s_new n a g xs = do
-    nid <- liftServer $ M.alloc M.nodeIdAllocator
-    send $ C.s_new n (fromIntegral nid) a (fromIntegral (nodeId g)) xs
+    nid <- lift $ M.alloc M.nodeIdAllocator
+    sendOSC $ C.s_new n (fromIntegral nid) a (fromIntegral (nodeId g)) xs
     return $ Synth nid
 
 s_new_ :: MonadIO m => String -> AddAction -> [(String, Double)] -> SendT m Synth
-s_new_ n a xs = liftServer rootNode >>= \g -> s_new n a g xs
+s_new_ n a xs = lift rootNode >>= \g -> s_new n a g xs
 
 s_release :: (Node a, MonadIO m) => Double -> a -> SendT m ()
 s_release r n = do
-    sendList [ C.n_set1 nid "gate" r
-             , C.s_noid [nid] ]
-    cleanup $ M.free M.nodeIdAllocator (nodeId n)
+    mapM_ sendOSC [ C.n_set1 nid "gate" r
+                  , C.s_noid [nid] ]
+    lift $ M.free M.nodeIdAllocator (nodeId n)
     where nid = fromIntegral (nodeId n)
 
 -- ====================================================================
@@ -155,31 +136,31 @@ instance Node Group where
     nodeId (Group nid) = nid
 
 instance Resource Group where
-    free = async immediately . n_free
+    free = send immediately . n_free
 
 rootNode :: MonadIO m => ServerT m Group
 rootNode = liftM Group M.rootNodeId
 
 g_new :: MonadIO m => AddAction -> Group -> SendT m Group
 g_new a p = do
-    nid <- liftServer $ M.alloc State.nodeIdAllocator
-    send $ C.g_new [(fromIntegral nid, a, fromIntegral (nodeId p))]
+    nid <- lift $ M.alloc State.nodeIdAllocator
+    sendOSC $ C.g_new [(fromIntegral nid, a, fromIntegral (nodeId p))]
     return $ Group nid
 
 g_new_ :: MonadIO m => AddAction -> SendT m Group
-g_new_ a = liftServer rootNode >>= g_new a
+g_new_ a = lift rootNode >>= g_new a
 
 g_deepFree :: MonadIO m => Group -> SendT m ()
-g_deepFree g = send $ C.g_deepFree [fromIntegral (nodeId g)]
+g_deepFree g = sendOSC $ C.g_deepFree [fromIntegral (nodeId g)]
 
 g_freeAll :: MonadIO m => Group -> SendT m ()
-g_freeAll g = send $ C.g_freeAll [fromIntegral (nodeId g)]
+g_freeAll g = sendOSC $ C.g_freeAll [fromIntegral (nodeId g)]
 
 g_head :: (Node n, MonadIO m) => Group -> n -> SendT m ()
-g_head g n = send $ C.g_head [(fromIntegral (nodeId g), fromIntegral (nodeId n))]
+g_head g n = sendOSC $ C.g_head [(fromIntegral (nodeId g), fromIntegral (nodeId n))]
 
 g_tail :: (Node n, MonadIO m) => Group -> n -> SendT m ()
-g_tail g n = send $ C.g_tail [(fromIntegral (nodeId g), fromIntegral (nodeId n))]
+g_tail g n = sendOSC $ C.g_tail [(fromIntegral (nodeId g), fromIntegral (nodeId n))]
 
 -- ====================================================================
 -- Buffer
@@ -188,6 +169,78 @@ newtype Buffer = Buffer { bufferId :: BufferId } deriving (Eq, Ord, Show)
 
 instance Resource Buffer where
     free = M.free M.bufferIdAllocator . bufferId
+
+b_alloc :: MonadIO m => Int -> Int -> SendT m (Async Buffer)
+b_alloc n c = do
+    bid <- lift $ M.alloc State.bufferIdAllocator
+    mkAsync (Buffer bid) (C.b_alloc (fromIntegral bid) n c)
+
+b_read :: MonadIO m => Buffer -> FilePath -> Maybe Int -> Maybe Int -> Maybe Int -> Bool -> SendT m (Async ())
+b_read (Buffer bid) path fileOffset numFrames bufferOffset leaveOpen =
+    mkAsync () $ C.b_read
+                    (fromIntegral bid) path
+                    (maybe 0 id fileOffset)
+                    (maybe (-1) id numFrames)
+                    (maybe 0 id bufferOffset)
+                    leaveOpen
+
+data HeaderFormat =
+    Aiff
+  | Next
+  | Wav
+  | Ircam
+  | Raw
+  deriving (Enum, Eq, Read, Show)
+
+data SampleFormat =
+    PcmInt8
+  | PcmInt16
+  | PcmInt24
+  | PcmInt32
+  | PcmFloat
+  | PcmDouble
+  | PcmMulaw
+  | PcmAlaw
+  deriving (Enum, Eq, Read, Show)
+
+headerFormatString :: HeaderFormat -> String
+headerFormatString Aiff  = "aiff"
+headerFormatString Next  = "next"
+headerFormatString Wav   = "wav"
+headerFormatString Ircam = "ircam"
+headerFormatString Raw   = "raw"
+
+sampleFormatString :: SampleFormat -> String
+sampleFormatString PcmInt8   = "int8"
+sampleFormatString PcmInt16  = "int16"
+sampleFormatString PcmInt24  = "int24"
+sampleFormatString PcmInt32  = "int32"
+sampleFormatString PcmFloat  = "float"
+sampleFormatString PcmDouble = "double"
+sampleFormatString PcmMulaw  = "mulaw"
+sampleFormatString PcmAlaw   = "alaw"
+
+b_write :: MonadIO m => Buffer -> FilePath -> HeaderFormat -> SampleFormat -> Maybe Int -> Maybe Int -> Bool -> SendT m (Async ())
+b_write (Buffer bid) path headerFormat sampleFormat fileOffset numFrames leaveOpen =
+    mkAsync () $ C.b_write
+                    (fromIntegral bid) path
+                    (headerFormatString headerFormat)
+                    (sampleFormatString sampleFormat)
+                    (maybe 0 id fileOffset)
+                    (maybe (-1) id numFrames)
+                    leaveOpen
+
+b_free :: MonadIO m => Buffer -> SendT m (Async ())
+b_free b = do
+    let bid = bufferId b
+    lift $ M.free State.bufferIdAllocator bid
+    mkAsync () (C.b_free (fromIntegral bid))
+
+b_zero :: MonadIO m => Buffer -> SendT m (Async ())
+b_zero (Buffer bid) = mkAsync () (C.b_zero (fromIntegral bid))
+
+b_query :: MonadIO m => Buffer -> ServerT m N.BufferInfo
+b_query (Buffer bid) = C.b_query [fromIntegral bid] `M.syncWith` N.b_info bid
 
 -- ====================================================================
 -- Bus

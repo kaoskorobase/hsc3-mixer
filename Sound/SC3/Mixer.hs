@@ -4,7 +4,8 @@ import           Reactive hiding (accumulate)
 import qualified Sound.SC3.Server.Allocator.Range as Range
 import           Sound.SC3.Server.Reactive
 import           Sound.SC3.Server.Resource
-import           Sound.OpenSoundControl
+import           Sound.SC3.Server.Send
+import           Sound.OpenSoundControl (immediately)
 
 data Redirect = Redirect {
     redirectGroup :: NodeId
@@ -29,10 +30,13 @@ data Command = Command
 mkStrip :: Server Strip
 mkStrip = do
     b <- newAudioBus 2
-    async immediately $ do
-        g <- g_new_ AddToTail
-        ig <- g_new AddToTail g
-        return $ Strip g ig b
+    send immediately $ do
+        b_alloc 1024 1 `whenDone` immediately $ \buf -> do
+            g <- g_new_ AddToTail
+            ig <- g_new AddToTail g
+            b_free buf `async` immediately
+            sync
+            return $ Strip g ig b
 
 -- data Mixer = Mixer
 
