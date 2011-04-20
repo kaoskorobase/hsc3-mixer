@@ -12,8 +12,8 @@ data Redirect = Redirect {
   } deriving (Show)
 
 data Fader = Fader {
-    faderGroup :: NodeId
-  , faderSynth :: NodeId
+    faderGroup :: Group
+  , faderSynth :: Synth
   } deriving (Show)
 
 data Strip = Strip {
@@ -31,12 +31,9 @@ mkStrip :: Server Strip
 mkStrip = do
     b <- newAudioBus 2
     send immediately $ do
-        b_alloc 1024 1 `whenDone` immediately $ \buf -> do
-            g <- g_new_ AddToTail
-            ig <- g_new AddToTail g
-            b_free buf `async` immediately
-            sync
-            return $ Strip g ig b
+        g <- g_new_ AddToTail
+        ig <- g_new AddToTail g
+        return $ Strip g ig b
 
 -- data Mixer = Mixer
 

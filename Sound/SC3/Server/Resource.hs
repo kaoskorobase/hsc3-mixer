@@ -12,6 +12,14 @@ module Sound.SC3.Server.Resource
   , status
   , PrintLevel(..)
   , dumpOSC
+  -- * Synth definitions
+  -- , d_recv
+  -- , d_load
+  -- , d_loadDir
+  , d_named
+  , d_default
+  , d_new
+  , d_free
   -- * Resources
   , Resource(..)
   -- ** Nodes
@@ -33,6 +41,7 @@ module Sound.SC3.Server.Resource
   , g_freeAll
   , g_head
   , g_tail
+  , g_dumpTree
   -- ** Buffers
   , Buffer
   , b_alloc
@@ -53,17 +62,21 @@ module Sound.SC3.Server.Resource
   , newControlBus
   ) where
 
+import qualified Codec.Digest.SHA as SHA
 import           Control.Applicative
+import           Control.Arrow (first)
 import           Control.Monad (liftM, unless, void)
 import           Control.Monad.IO.Class (MonadIO, liftIO)
+import qualified Data.ByteString.Lazy.Char8 as B
 import           Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
-import           Sound.SC3 (Rate(..))
+import           Sound.SC3 (Rate(..), Synthdef, UGen)
 import           Sound.SC3.Server.Monad (Server, ServerT, BufferId, BusId, NodeId, fork)
 import qualified Sound.SC3.Server.Monad as M
 import           Sound.SC3.Server.Allocator.Range (Range)
 import qualified Sound.SC3.Server.Allocator.Range as Range
 import qualified Sound.SC3.Server.State as State
+import qualified Sound.SC3.Server.Synthdef as Synthdef
 import           Sound.SC3.Server.Command (AddAction(..), PrintLevel(..))
 import qualified Sound.SC3.Server.Command as C
 import qualified Sound.SC3.Server.Command.Completion as C
@@ -87,6 +100,41 @@ class Resource a where
     free :: MonadIO m => a -> ServerT m ()
 
 -- ====================================================================
+-- Synth definitions
+
+newtype SynthDef = SynthDef {
+    name  :: String
+  } deriving (Eq, Show)
+
+d_named :: String -> SynthDef
+d_named = SynthDef
+
+d_default :: SynthDef
+d_default = d_named "default"
+
+graphName = SHA.showBSasHex . SHA.hash SHA.SHA512 . B.pack . show . Synthdef.synth
+
+d_new :: Monad m => String -> UGen -> Async m SynthDef
+d_new prefix ugen = mkAsync $ return (sd, C.d_recv (Synthdef.synthdef (name sd) ugen))
+    where sd = SynthDef (prefix ++ "-" ++ graphName ugen)
+
+-- | Remove definition once all nodes using it have ended.
+d_free :: Monad m => SynthDef -> SendT m ()
+d_free = sendOSC . C.d_free . (:[]) . name
+
+-- -- | Install a bytecode instrument definition.
+-- d_recv :: MonadIO m => Synthdef -> Async m ()
+-- d_recv = mkAsync_ . C.d_recv
+-- 
+-- -- | Load an instrument definition from a named file.
+-- d_load :: MonadIO m => FilePath -> Async m ()
+-- d_load = mkAsync_ . C.d_load
+-- 
+-- -- | Load a directory of instrument definitions files.
+-- d_loadDir :: MonadIO m => FilePath -> Async m ()
+-- d_loadDir = mkAsync_ . C.d_loadDir
+
+-- ====================================================================
 -- Node
 
 class Node a where
@@ -95,7 +143,7 @@ class Node a where
 n_free :: (Node a, MonadIO m) => a -> SendT m ()
 n_free n = do
     sendOSC $ C.n_free [fromIntegral (nodeId n)]
-    lift $ M.free M.nodeIdAllocator (nodeId n)
+    unsafeServer $ M.free M.nodeIdAllocator (nodeId n)
 
 n_query :: (Node a, MonadIO m) => a -> ServerT m N.NodeNotification
 n_query n = M.syncWith (C.n_query [(fromIntegral (nodeId n))]) (N.n_info (nodeId n))
@@ -111,21 +159,20 @@ instance Node Synth where
 instance Resource Synth where
     free = send immediately . n_free
 
-s_new :: MonadIO m => String -> AddAction -> Group -> [(String, Double)] -> SendT m Synth
-s_new n a g xs = do
-    nid <- lift $ M.alloc M.nodeIdAllocator
-    sendOSC $ C.s_new n (fromIntegral nid) a (fromIntegral (nodeId g)) xs
+s_new :: MonadIO m => SynthDef -> AddAction -> Group -> [(String, Double)] -> SendT m Synth
+s_new d a g xs = do
+    nid <- unsafeServer $ M.alloc M.nodeIdAllocator
+    sendOSC $ C.s_new (name d) (fromIntegral nid) a (fromIntegral (nodeId g)) xs
     return $ Synth nid
 
-s_new_ :: MonadIO m => String -> AddAction -> [(String, Double)] -> SendT m Synth
-s_new_ n a xs = lift rootNode >>= \g -> s_new n a g xs
+s_new_ :: MonadIO m => SynthDef -> AddAction -> [(String, Double)] -> SendT m Synth
+s_new_ d a xs = unsafeServer rootNode >>= \g -> s_new d a g xs
 
 s_release :: (Node a, MonadIO m) => Double -> a -> SendT m ()
 s_release r n = do
-    mapM_ sendOSC [ C.n_set1 nid "gate" r
-                  , C.s_noid [nid] ]
-    lift $ M.free M.nodeIdAllocator (nodeId n)
-    where nid = fromIntegral (nodeId n)
+    sendOSC (C.n_set1 (fromIntegral nid) "gate" r)
+    unsafeServer $ M.free M.nodeIdAllocator nid
+    where nid = nodeId n
 
 -- ====================================================================
 -- Group
@@ -143,24 +190,27 @@ rootNode = liftM Group M.rootNodeId
 
 g_new :: MonadIO m => AddAction -> Group -> SendT m Group
 g_new a p = do
-    nid <- lift $ M.alloc State.nodeIdAllocator
+    nid <- unsafeServer $ M.alloc State.nodeIdAllocator
     sendOSC $ C.g_new [(fromIntegral nid, a, fromIntegral (nodeId p))]
     return $ Group nid
 
 g_new_ :: MonadIO m => AddAction -> SendT m Group
-g_new_ a = lift rootNode >>= g_new a
+g_new_ a = unsafeServer rootNode >>= g_new a
 
-g_deepFree :: MonadIO m => Group -> SendT m ()
+g_deepFree :: Monad m => Group -> SendT m ()
 g_deepFree g = sendOSC $ C.g_deepFree [fromIntegral (nodeId g)]
 
-g_freeAll :: MonadIO m => Group -> SendT m ()
+g_freeAll :: Monad m => Group -> SendT m ()
 g_freeAll g = sendOSC $ C.g_freeAll [fromIntegral (nodeId g)]
 
-g_head :: (Node n, MonadIO m) => Group -> n -> SendT m ()
+g_head :: (Node n, Monad m) => Group -> n -> SendT m ()
 g_head g n = sendOSC $ C.g_head [(fromIntegral (nodeId g), fromIntegral (nodeId n))]
 
-g_tail :: (Node n, MonadIO m) => Group -> n -> SendT m ()
+g_tail :: (Node n, Monad m) => Group -> n -> SendT m ()
 g_tail g n = sendOSC $ C.g_tail [(fromIntegral (nodeId g), fromIntegral (nodeId n))]
+
+g_dumpTree :: Monad m => [(Group, Bool)] -> SendT m ()
+g_dumpTree = sendOSC . C.g_dumpTree . map (first (fromIntegral . nodeId))
 
 -- ====================================================================
 -- Buffer
@@ -170,19 +220,19 @@ newtype Buffer = Buffer { bufferId :: BufferId } deriving (Eq, Ord, Show)
 instance Resource Buffer where
     free = M.free M.bufferIdAllocator . bufferId
 
-b_alloc :: MonadIO m => Int -> Int -> SendT m (Async Buffer)
-b_alloc n c = do
-    bid <- lift $ M.alloc State.bufferIdAllocator
-    mkAsync (Buffer bid) (C.b_alloc (fromIntegral bid) n c)
+b_alloc :: MonadIO m => Int -> Int -> Async m Buffer
+b_alloc n c = mkAsync $ do
+    bid <- unsafeServer $ M.alloc State.bufferIdAllocator
+    return (Buffer bid, C.b_alloc (fromIntegral bid) n c)
 
-b_read :: MonadIO m => Buffer -> FilePath -> Maybe Int -> Maybe Int -> Maybe Int -> Bool -> SendT m (Async ())
+b_read :: MonadIO m => Buffer -> FilePath -> Maybe Int -> Maybe Int -> Maybe Int -> Bool -> Async m ()
 b_read (Buffer bid) path fileOffset numFrames bufferOffset leaveOpen =
-    mkAsync () $ C.b_read
-                    (fromIntegral bid) path
-                    (maybe 0 id fileOffset)
-                    (maybe (-1) id numFrames)
-                    (maybe 0 id bufferOffset)
-                    leaveOpen
+    mkAsync_ $ C.b_read
+                (fromIntegral bid) path
+                (maybe 0 id fileOffset)
+                (maybe (-1) id numFrames)
+                (maybe 0 id bufferOffset)
+                leaveOpen
 
 data HeaderFormat =
     Aiff
@@ -220,24 +270,24 @@ sampleFormatString PcmDouble = "double"
 sampleFormatString PcmMulaw  = "mulaw"
 sampleFormatString PcmAlaw   = "alaw"
 
-b_write :: MonadIO m => Buffer -> FilePath -> HeaderFormat -> SampleFormat -> Maybe Int -> Maybe Int -> Bool -> SendT m (Async ())
+b_write :: MonadIO m => Buffer -> FilePath -> HeaderFormat -> SampleFormat -> Maybe Int -> Maybe Int -> Bool -> Async m ()
 b_write (Buffer bid) path headerFormat sampleFormat fileOffset numFrames leaveOpen =
-    mkAsync () $ C.b_write
-                    (fromIntegral bid) path
-                    (headerFormatString headerFormat)
-                    (sampleFormatString sampleFormat)
-                    (maybe 0 id fileOffset)
-                    (maybe (-1) id numFrames)
-                    leaveOpen
+    mkAsync_ $ C.b_write
+                (fromIntegral bid) path
+                (headerFormatString headerFormat)
+                (sampleFormatString sampleFormat)
+                (maybe 0 id fileOffset)
+                (maybe (-1) id numFrames)
+                leaveOpen
 
-b_free :: MonadIO m => Buffer -> SendT m (Async ())
-b_free b = do
+b_free :: MonadIO m => Buffer -> Async m ()
+b_free b = mkAsync $ do
     let bid = bufferId b
-    lift $ M.free State.bufferIdAllocator bid
-    mkAsync () (C.b_free (fromIntegral bid))
+    unsafeServer $ M.free State.bufferIdAllocator bid
+    return ((), C.b_free (fromIntegral bid))
 
-b_zero :: MonadIO m => Buffer -> SendT m (Async ())
-b_zero (Buffer bid) = mkAsync () (C.b_zero (fromIntegral bid))
+b_zero :: MonadIO m => Buffer -> Async m ()
+b_zero (Buffer bid) = mkAsync_ (C.b_zero (fromIntegral bid))
 
 b_query :: MonadIO m => Buffer -> ServerT m N.BufferInfo
 b_query (Buffer bid) = C.b_query [fromIntegral bid] `M.syncWith` N.b_info bid

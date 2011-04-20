@@ -23,11 +23,13 @@ Executable hsc3-mixer
     Ghc-Prof-Options: -W -threaded -rtsopts -auto-all
     Build-Depends:
         base >= 4 && < 5
+      , bytestring
       , containers
       , hosc >= 0.10
       , hsc3 >= 0.10
       , hsc3-server
       , reactive-banana
+      , SHA2
       , transformers
 
 -- Library

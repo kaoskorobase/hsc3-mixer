@@ -15,7 +15,7 @@ playDefault t = do
     let dur = 1
         lat = 0.03
     r <- rootNode
-    synth <- send (UTCr (t+lat)) $ s_new "default" AddToTail r []
+    synth <- send (UTCr (t+lat)) $ s_new d_default AddToTail r []
     fork $ do
         let t' = t + dur
         liftIO $ pauseThreadUntil t'
@@ -53,18 +53,18 @@ mainIO = do
         -- mkStrip >>= liftIO . print
         -- send immediately sync
         t <- liftIO utcr
+        let t' = UTCr (t+0.5)
         (g, ig, b) <- send immediately $ do
-            x <- b_alloc 1024 1 `whenDone`  UTCr (t+2) $ \b -> do
-                -- b_free b `async` immediately
-                g <- g_new_ AddToTail
-                ig <- g_new AddToTail g
-                sync
-                return (g, ig, b)
-            return x
-        -- n_query g >>= liftIO . print
+            async $ b_alloc 1024 1 `whenDone` immediately $ \b -> do
+                sync' $ b_free b `whenDone` t' $ \() -> do
+                    g <- g_new_ AddToTail
+                    ig <- g_new AddToTail g
+                    return (g, ig, b)
+        n_query g >>= liftIO . print
         b_query b >>= liftIO . print
         status >>= liftIO . print
+        M.syncWith (C.g_queryTree [(0, True)]) (N.hasAddress "/g_queryTree.reply") >>= liftIO . print
         -- ioLoop =<< liftIO utcr
 
 main :: IO ()
-main = mainR
+main = mainIO

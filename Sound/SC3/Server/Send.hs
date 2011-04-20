@@ -4,15 +4,17 @@ module Sound.SC3.Server.Send
     SendT
   , Async
   , mkAsync
-  , lift
+  , mkAsync_
+  , unsafeServer
   , sendOSC
   , whenDone
   , async
   , sync
+  , sync'
   , send
   ) where
 
-import           Control.Monad.IO.Class (MonadIO)
+import           Control.Monad.IO.Class (MonadIO, liftIO)
 import qualified Control.Monad.Trans.Class as Trans
 import           Control.Monad.Trans.State (StateT(..))
 import qualified Control.Monad.Trans.State as State
@@ -29,61 +31,112 @@ import           Sound.OpenSoundControl (OSC(..), Time)
 
 data State = State {
     buildOSC :: Seq OSC
-  , syncs    :: Seq SyncId
+  , syncIds  :: Seq SyncId
   } deriving (Eq, Show)
 
+-- | Representation of a server-side action (or sequence of actions).
 newtype SendT m a = SendT (StateT State (ServerT m) a)
                     deriving (Functor, Monad)
 
+-- | Execute a SendT action, returning the result, an OSC bundle and a list of sync ids.
 runSendT :: Monad m => Time -> SendT m a -> ServerT m (a, Maybe OSC, Seq SyncId)
 runSendT t (SendT m) = do
     (a, s) <- runStateT m (State Seq.empty Seq.empty)
     let osc = if Seq.null (buildOSC s)
                 then Nothing
                 else Just (Bundle t (Seq.toList (buildOSC s)))
-    return (a, osc, syncs s)
+    return (a, osc, syncIds s)
 
-lift :: Monad m => ServerT m a -> SendT m a
-lift = SendT . Trans.lift
+-- | Modify the state in a SendT action.
+modify :: Monad m => (State -> State) -> SendT m ()
+modify = SendT . State.modify
 
+-- | Lift a ServerT action into SendT.
+--
+-- This is potentially unsafe and should only be used for the implementation of server resources. Lifting actions that rely on synchronization will not work as expected.
+unsafeServer :: Monad m => ServerT m a -> SendT m a
+unsafeServer = SendT . Trans.lift
+
+-- | Send an OSC packet.
+--
+-- Bundles are flattened into the resulting bundle, because the SuperCollider server doesn't handle nested bundles.
 sendOSC :: Monad m => OSC -> SendT m ()
-sendOSC osc = SendT $ State.modify $ \s -> s { buildOSC = buildOSC s |> osc }
+sendOSC osc@(Message _ _) = modify $ \s -> s { buildOSC = buildOSC s |> osc }
+sendOSC osc@(Bundle _ _)  = modify $ \s -> s { buildOSC = buildOSC s >< Seq.fromList (flatten osc) }
+    where
+        flatten msg@(Message _ _) = [msg]
+        flatten (Bundle _ xs) = concatMap flatten xs
 
-data Async a = Async a (Maybe OSC -> OSC)
+-- | Representation of an asynchronous server command.
+--
+-- Asynchronous commands are executed asynchronously with respect to other server commands. There are two different ways of synchronizing with an asynchronous command: using 'whenDone' for server-side synchronization or 'sync' for client-side synchronization.
+data Async m a = Async (SendT m (a, (Maybe OSC -> OSC)))
 
 -- | Create an asynchronous command.
 --
 -- The completion message will be appended at the end of the message.
-mkAsync :: Monad m => a -> OSC -> SendT m (Async a)
-mkAsync a msg = return (Async a f)
+mkAsync :: Monad m => SendT m (a, OSC) -> Async m a
+mkAsync m = Async $ do
+    (a, osc) <- m
+    return (a, f osc)
     where
-        f Nothing   = msg
-        f (Just cm) = C.withCM msg cm
+        f msg Nothing   = msg
+        f msg (Just cm) = C.withCM msg cm
 
--- | Execute an asynchronous command
-async :: Monad m => SendT m (Async a) -> Time -> SendT m a
-async a t = whenDone a t return
+-- | Create an asynchronous command from a pure OSC message.
+mkAsync_ :: Monad m => OSC -> Async m ()
+mkAsync_ osc = mkAsync $ return ((), osc)
 
--- | Execute a SendT action after the asynchronous command has finished.
-whenDone :: Monad m => SendT m (Async a) -> Time -> (a -> SendT m b) -> SendT m b
-whenDone m t f = do
-    (Async a toOSC) <- m
-    (b, osc, sids) <- lift $ runSendT t (f a)
-    sendOSC (toOSC osc)
-    SendT $ State.modify $ \s -> s { syncs = syncs s >< sids }
-    return b
+-- | Execute an server-side action after the asynchronous command has finished.
+--
+-- The corresponding server commands are scheduled at a time @t@ in the future.
+whenDone :: Monad m => Async m a -> Time -> (a -> SendT m b) -> Async m b
+whenDone (Async m) t f = Async $ do
+    (a, g) <- m
+    (b, osc, sids) <- unsafeServer $ runSendT t (f a)
+    modify $ \s -> s { syncIds = syncIds s >< sids }
+    let g' p = case p of
+                Nothing -> g osc
+                Just msg@(Message _ _) ->
+                    case osc of
+                        Nothing -> g (Just msg)
+                        Just (Bundle t xs) -> g (Just (Bundle t (xs ++ [msg])))
+                        Just (Message _ _) -> error "whenDone: cannot append to message"
+                Just (Bundle _ _) -> error "whenDone: cannot append bundle"
+    return (b, g')
 
--- | Add a synchronization barrier.
-sync :: MonadIO m => SendT m ()
-sync = do
-    sid <- lift $ M.alloc State.syncIdAllocator
-    SendT $ State.modify $ \s -> s { syncs = syncs s |> sid }
+-- | Execute an asynchronous command asynchronously.
+async :: Monad m => Async m a -> SendT m a
+async (Async m) = do
+    (a, f) <- m
+    sendOSC (f Nothing)
+    return a
+
+-- | Synchronize with the completion of an asynchronous command.
+sync :: MonadIO m => Async m a -> SendT m a
+sync (Async m) = do
+    (a, f) <- m
+    sid <- unsafeServer $ M.alloc State.syncIdAllocator
+    modify $ \s -> s { syncIds = syncIds s |> sid }
+    sendOSC (f Nothing)
     sendOSC (C.sync (fromIntegral sid))
+    return a
+
+-- | Synchronize with the completion of an asynchronous command's completion bundle.
+sync' :: MonadIO m => Async m a -> SendT m a
+sync' (Async m) = do
+    (a, f) <- m
+    sid <- unsafeServer $ M.alloc State.syncIdAllocator
+    modify $ \s -> s { syncIds = syncIds s |> sid }
+    sendOSC (f (Just (C.sync (fromIntegral sid))))
+    return a
 
 -- | Run the SendT action and return the result.
 send :: MonadIO m => Time -> SendT m a -> ServerT m a
 send t m = do
     (a, osc, sids) <- runSendT t m
+    -- liftIO $ print osc
+    -- liftIO $ print (Seq.toList sids)
     maybe (return []) (flip M.syncWithAll (map N.synced (Seq.toList sids))) osc
     Seq.mapM_ (M.free State.syncIdAllocator) sids
     return a
