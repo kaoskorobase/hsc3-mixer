@@ -1,15 +1,8 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-module Sound.SC3.Server.Resource
-  ( Server
-  , ServerT
-  , BufferId
-  , BusId
-  , NodeId
-  , fork
-  , MonadIO
-  , liftIO
+module Sound.SC3.Server.Monad.Command
+  (
   -- * Master controls
-  , status
+    status
   , PrintLevel(..)
   , dumpOSC
   -- * Synth definitions
@@ -21,7 +14,7 @@ module Sound.SC3.Server.Resource
   , d_new
   , d_free
   -- * Resources
-  , Resource(..)
+  -- , Resource(..)
   -- ** Nodes
   , Node(..)
   , n_free
@@ -60,6 +53,10 @@ module Sound.SC3.Server.Resource
   , newAudioBus
   , ControlBus(..)
   , newControlBus
+  -- * ServerT monad
+  , module Sound.SC3.Server.Monad
+  -- * SendT monad
+  , module Sound.SC3.Server.Monad.Send
   ) where
 
 import qualified Codec.Digest.SHA as SHA
@@ -72,17 +69,18 @@ import           Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
 import           Sound.SC3 (Rate(..), Synthdef, UGen)
 import           Sound.SC3.Server.Monad (Server, ServerT, BufferId, BusId, NodeId, fork)
-import qualified Sound.SC3.Server.Monad as M
 import           Sound.SC3.Server.Allocator.Range (Range)
 import qualified Sound.SC3.Server.Allocator.Range as Range
+import           Sound.SC3.Server.Monad hiding (sync, unsafeSync)
+import qualified Sound.SC3.Server.Monad as M
+import           Sound.SC3.Server.Monad.Send
 import qualified Sound.SC3.Server.State as State
 import qualified Sound.SC3.Server.Synthdef as Synthdef
 import           Sound.SC3.Server.Command (AddAction(..), PrintLevel(..))
 import qualified Sound.SC3.Server.Command as C
 import qualified Sound.SC3.Server.Command.Completion as C
 import qualified Sound.SC3.Server.Notification as N
-import           Sound.SC3.Server.Send
-import           Sound.OpenSoundControl (OSC(..), Time, immediately)
+import           Sound.OpenSoundControl (OSC(..), Time(..), immediately)
 
 -- ====================================================================
 -- Utils

@@ -3,8 +3,7 @@ module Sound.SC3.Mixer where
 import           Reactive hiding (accumulate)
 import qualified Sound.SC3.Server.Allocator.Range as Range
 import           Sound.SC3.Server.Reactive
-import           Sound.SC3.Server.Resource
-import           Sound.SC3.Server.Send
+import           Sound.SC3.Server.Monad.Command
 import           Sound.OpenSoundControl (immediately)
 
 data Redirect = Redirect {

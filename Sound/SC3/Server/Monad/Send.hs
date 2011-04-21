@@ -1,5 +1,5 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-module Sound.SC3.Server.Send
+module Sound.SC3.Server.Monad.Send
   ( SendT
   , Async
   , liftServer

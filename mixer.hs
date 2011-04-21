@@ -2,8 +2,7 @@ import Control.Monad (forever)
 import Sound.SC3.Server.Process.Monad
 import Reactive hiding (accumulate)
 import Sound.SC3.Server.Reactive
-import Sound.SC3.Server.Resource
-import Sound.SC3.Server.Send
+import Sound.SC3.Server.Monad.Command
 import qualified Sound.SC3.Server.Monad as M
 import qualified Sound.SC3.Server.Notification as N
 import qualified Sound.SC3.Server.Command as C
@@ -65,7 +64,7 @@ mainIO = do
         n_query g >>= liftIO . print
         b_query b >>= liftIO . print
         status >>= liftIO . print
-        M.waitFor (C.g_queryTree [(0, True)]) (N.hasAddress "/g_queryTree.reply") >>= liftIO . print
+        waitFor (C.g_queryTree [(0, True)]) (N.hasAddress "/g_queryTree.reply") >>= liftIO . print
         -- ioLoop =<< liftIO utcr
 
 main :: IO ()
