@@ -63,7 +63,7 @@ mainIO = do
         n_query g >>= liftIO . print
         b_query b >>= liftIO . print
         status >>= liftIO . print
-        M.syncWith (C.g_queryTree [(0, True)]) (N.hasAddress "/g_queryTree.reply") >>= liftIO . print
+        M.waitFor (C.g_queryTree [(0, True)]) (N.hasAddress "/g_queryTree.reply") >>= liftIO . print
         -- ioLoop =<< liftIO utcr
 
 main :: IO ()

@@ -88,7 +88,7 @@ import           Sound.OpenSoundControl (OSC(..), Time, immediately)
 -- Master controls
 
 status :: MonadIO m => ServerT m N.Status
-status = M.syncWith C.status N.status_reply
+status = M.waitFor C.status N.status_reply
 
 dumpOSC :: MonadIO m => PrintLevel -> ServerT m ()
 dumpOSC p = M.sync (C.dumpOSC p)
@@ -146,7 +146,7 @@ n_free n = do
     unsafeServer $ M.free M.nodeIdAllocator (nodeId n)
 
 n_query :: (Node a, MonadIO m) => a -> ServerT m N.NodeNotification
-n_query n = M.syncWith (C.n_query [(fromIntegral (nodeId n))]) (N.n_info (nodeId n))
+n_query n = M.waitFor (C.n_query [(fromIntegral (nodeId n))]) (N.n_info (nodeId n))
 
 -- ====================================================================
 -- Synth
@@ -290,7 +290,7 @@ b_zero :: MonadIO m => Buffer -> Async m ()
 b_zero (Buffer bid) = mkAsync_ (C.b_zero (fromIntegral bid))
 
 b_query :: MonadIO m => Buffer -> ServerT m N.BufferInfo
-b_query (Buffer bid) = C.b_query [fromIntegral bid] `M.syncWith` N.b_info bid
+b_query (Buffer bid) = C.b_query [fromIntegral bid] `M.waitFor` N.b_info bid
 
 -- ====================================================================
 -- Bus
