@@ -2,7 +2,7 @@
 module Sound.SC3.Server.Send
   ( SendT
   , Async
-  , unsafeServer
+  , liftServer
   , sendMsg
   , mkAsync
   , mkAsync_
@@ -51,9 +51,9 @@ modify = SendT . State.modify
 
 -- | Lift a ServerT action into SendT.
 --
--- This is potentially unsafe and should only be used for the implementation of server resources. Lifting actions that rely on synchronization will not work as expected.
-unsafeServer :: Monad m => ServerT m a -> SendT m a
-unsafeServer = SendT . Trans.lift
+-- This is potentially unsafe and should only be used for the allocation of server resources. Lifting actions that rely on communication and synchronization primitives will not work as expected.
+liftServer :: Monad m => ServerT m a -> SendT m a
+liftServer = SendT . Trans.lift
 
 -- | Send an OSC message.
 --
@@ -87,7 +87,7 @@ mkAsync_ osc = mkAsync $ return ((), osc)
 -- | Execute an asynchronous command asynchronously.
 async :: Monad m => Async m a -> SendT m a
 async (Async m) = do
-    (a, f) <- unsafeServer m
+    (a, f) <- liftServer m
     sendMsg (f Nothing)
     return a
 
@@ -96,8 +96,8 @@ async (Async m) = do
 -- The corresponding server commands are scheduled at a time @t@ in the future.
 whenDone :: Monad m => Async m a -> Time -> (a -> SendT m b) -> SendT m b
 whenDone (Async m) t f = do
-    (a, appendCompletion) <- unsafeServer m
-    (b, osc, sids) <- unsafeServer $ runSendT t (f a)
+    (a, appendCompletion) <- liftServer m
+    (b, osc, sids) <- liftServer $ runSendT t (f a)
     sendMsg (appendCompletion osc)
     modify $ \s -> s { syncIds = syncIds s >< sids }
     return b
@@ -105,7 +105,7 @@ whenDone (Async m) t f = do
 -- | Add a synchronization barrier.
 sync :: MonadIO m => SendT m ()
 sync = do
-    sid <- unsafeServer $ M.alloc State.syncIdAllocator
+    sid <- liftServer $ M.alloc State.syncIdAllocator
     modify $ \s -> s { syncIds = syncIds s |> sid }
     sendMsg (C.sync (fromIntegral sid))
 

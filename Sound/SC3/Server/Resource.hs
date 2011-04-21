@@ -143,7 +143,7 @@ class Node a where
 n_free :: (Node a, MonadIO m) => a -> SendT m ()
 n_free n = do
     sendMsg $ C.n_free [fromIntegral (nodeId n)]
-    unsafeServer $ M.free M.nodeIdAllocator (nodeId n)
+    liftServer $ M.free M.nodeIdAllocator (nodeId n)
 
 n_query :: (Node a, MonadIO m) => a -> ServerT m N.NodeNotification
 n_query n = M.waitFor (C.n_query [(fromIntegral (nodeId n))]) (N.n_info (nodeId n))
@@ -161,17 +161,17 @@ instance Resource Synth where
 
 s_new :: MonadIO m => SynthDef -> AddAction -> Group -> [(String, Double)] -> SendT m Synth
 s_new d a g xs = do
-    nid <- unsafeServer $ M.alloc M.nodeIdAllocator
+    nid <- liftServer $ M.alloc M.nodeIdAllocator
     sendMsg $ C.s_new (name d) (fromIntegral nid) a (fromIntegral (nodeId g)) xs
     return $ Synth nid
 
 s_new_ :: MonadIO m => SynthDef -> AddAction -> [(String, Double)] -> SendT m Synth
-s_new_ d a xs = unsafeServer rootNode >>= \g -> s_new d a g xs
+s_new_ d a xs = liftServer rootNode >>= \g -> s_new d a g xs
 
 s_release :: (Node a, MonadIO m) => Double -> a -> SendT m ()
 s_release r n = do
     sendMsg (C.n_set1 (fromIntegral nid) "gate" r)
-    unsafeServer $ M.free M.nodeIdAllocator nid
+    liftServer $ M.free M.nodeIdAllocator nid
     where nid = nodeId n
 
 -- ====================================================================
@@ -190,12 +190,12 @@ rootNode = liftM Group M.rootNodeId
 
 g_new :: MonadIO m => AddAction -> Group -> SendT m Group
 g_new a p = do
-    nid <- unsafeServer $ M.alloc State.nodeIdAllocator
+    nid <- liftServer $ M.alloc State.nodeIdAllocator
     sendMsg $ C.g_new [(fromIntegral nid, a, fromIntegral (nodeId p))]
     return $ Group nid
 
 g_new_ :: MonadIO m => AddAction -> SendT m Group
-g_new_ a = unsafeServer rootNode >>= g_new a
+g_new_ a = liftServer rootNode >>= g_new a
 
 g_deepFree :: Monad m => Group -> SendT m ()
 g_deepFree g = sendMsg $ C.g_deepFree [fromIntegral (nodeId g)]
