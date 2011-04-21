@@ -222,7 +222,7 @@ instance Resource Buffer where
 
 b_alloc :: MonadIO m => Int -> Int -> Async m Buffer
 b_alloc n c = mkAsync $ do
-    bid <- unsafeServer $ M.alloc State.bufferIdAllocator
+    bid <- M.alloc State.bufferIdAllocator
     return (Buffer bid, C.b_alloc (fromIntegral bid) n c)
 
 b_read :: MonadIO m => Buffer -> FilePath -> Maybe Int -> Maybe Int -> Maybe Int -> Bool -> Async m ()
@@ -283,7 +283,7 @@ b_write (Buffer bid) path headerFormat sampleFormat fileOffset numFrames leaveOp
 b_free :: MonadIO m => Buffer -> Async m ()
 b_free b = mkAsync $ do
     let bid = bufferId b
-    unsafeServer $ M.free State.bufferIdAllocator bid
+    M.free State.bufferIdAllocator bid
     return ((), C.b_free (fromIntegral bid))
 
 b_zero :: MonadIO m => Buffer -> Async m ()

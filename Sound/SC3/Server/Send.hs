@@ -1,16 +1,14 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 module Sound.SC3.Server.Send
-  (
-    SendT
+  ( SendT
   , Async
-  , mkAsync
-  , mkAsync_
   , unsafeServer
   , sendOSC
+  , mkAsync
+  , mkAsync_
   , whenDone
   , async
   , sync
-  , sync'
   , exec
   ) where
 
@@ -70,12 +68,12 @@ sendOSC osc@(Bundle _ _)  = modify $ \s -> s { buildOSC = buildOSC s >< Seq.from
 -- | Representation of an asynchronous server command.
 --
 -- Asynchronous commands are executed asynchronously with respect to other server commands. There are two different ways of synchronizing with an asynchronous command: using 'whenDone' for server-side synchronization or 'sync' for client-side synchronization.
-data Async m a = Async (SendT m (a, (Maybe OSC -> OSC)))
+data Async m a = Async (ServerT m (a, (Maybe OSC -> OSC)))
 
 -- | Create an asynchronous command.
 --
 -- The completion message will be appended at the end of the message.
-mkAsync :: Monad m => SendT m (a, OSC) -> Async m a
+mkAsync :: Monad m => ServerT m (a, OSC) -> Async m a
 mkAsync m = Async $ do
     (a, osc) <- m
     return (a, f osc)
@@ -87,49 +85,30 @@ mkAsync m = Async $ do
 mkAsync_ :: Monad m => OSC -> Async m ()
 mkAsync_ osc = mkAsync $ return ((), osc)
 
--- | Execute an server-side action after the asynchronous command has finished.
---
--- The corresponding server commands are scheduled at a time @t@ in the future.
-whenDone :: Monad m => Async m a -> Time -> (a -> SendT m b) -> Async m b
-whenDone (Async m) t f = Async $ do
-    (a, g) <- m
-    (b, osc, sids) <- unsafeServer $ runSendT t (f a)
-    modify $ \s -> s { syncIds = syncIds s >< sids }
-    let g' p = case p of
-                Nothing -> g osc
-                Just msg@(Message _ _) ->
-                    case osc of
-                        Nothing -> g (Just msg)
-                        Just (Bundle t xs) -> g (Just (Bundle t (xs ++ [msg])))
-                        Just (Message _ _) -> error "whenDone: cannot append to message"
-                Just (Bundle _ _) -> error "whenDone: cannot append bundle"
-    return (b, g')
-
 -- | Execute an asynchronous command asynchronously.
 async :: Monad m => Async m a -> SendT m a
 async (Async m) = do
-    (a, f) <- m
+    (a, f) <- unsafeServer m
     sendOSC (f Nothing)
     return a
 
--- | Synchronize with the completion of an asynchronous command.
-sync :: MonadIO m => Async m a -> SendT m a
-sync (Async m) = do
-    (a, f) <- m
+-- | Execute an server-side action after the asynchronous command has finished.
+--
+-- The corresponding server commands are scheduled at a time @t@ in the future.
+whenDone :: Monad m => Async m a -> Time -> (a -> SendT m b) -> SendT m b
+whenDone (Async m) t f = do
+    (a, appendCompletion) <- unsafeServer m
+    (b, osc, sids) <- unsafeServer $ runSendT t (f a)
+    sendOSC (appendCompletion osc)
+    modify $ \s -> s { syncIds = syncIds s >< sids }
+    return b
+
+-- | Add a synchronization barrier.
+sync :: MonadIO m => SendT m ()
+sync = do
     sid <- unsafeServer $ M.alloc State.syncIdAllocator
     modify $ \s -> s { syncIds = syncIds s |> sid }
-    sendOSC (f Nothing)
     sendOSC (C.sync (fromIntegral sid))
-    return a
-
--- | Synchronize with the completion of an asynchronous command's completion bundle.
-sync' :: MonadIO m => Async m a -> SendT m a
-sync' (Async m) = do
-    (a, f) <- m
-    sid <- unsafeServer $ M.alloc State.syncIdAllocator
-    modify $ \s -> s { syncIds = syncIds s |> sid }
-    sendOSC (f (Just (C.sync (fromIntegral sid))))
-    return a
 
 -- | Run the SendT action and return the result.
 exec :: MonadIO m => Time -> SendT m a -> ServerT m a

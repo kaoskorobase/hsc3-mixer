@@ -53,13 +53,15 @@ mainIO = do
         -- mkStrip >>= liftIO . print
         -- send immediately sync
         t <- liftIO utcr
-        let t' = UTCr (t+0.5)
-            async $ b_alloc 1024 1 `whenDone` immediately $ \b -> do
-                sync' $ b_free b `whenDone` t' $ \() -> do
+        let t' = UTCr (t+5)
         (g, ig, b) <- exec immediately $ do
+            b_alloc 1024 1 `whenDone` immediately $ \b -> do
+                x <- b_free b `whenDone` t' $ \() -> do
                     g <- g_new_ AddToTail
                     ig <- g_new AddToTail g
+                    sync
                     return (g, ig, b)
+                return x
         n_query g >>= liftIO . print
         b_query b >>= liftIO . print
         status >>= liftIO . print
