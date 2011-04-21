@@ -30,7 +30,7 @@ data Command = Command
 mkStrip :: Server Strip
 mkStrip = do
     b <- newAudioBus 2
-    send immediately $ do
+    exec immediately $ do
         g <- g_new_ AddToTail
         ig <- g_new AddToTail g
         return $ Strip g ig b

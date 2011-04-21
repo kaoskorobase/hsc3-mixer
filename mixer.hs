@@ -15,11 +15,11 @@ playDefault t = do
     let dur = 1
         lat = 0.03
     r <- rootNode
-    synth <- send (UTCr (t+lat)) $ s_new d_default AddToTail r []
+    synth <- exec (UTCr (t+lat)) $ s_new d_default AddToTail r []
     fork $ do
         let t' = t + dur
         liftIO $ pauseThreadUntil t'
-        send (UTCr (t' + lat)) $ s_release 0 synth
+        exec (UTCr (t' + lat)) $ s_release 0 synth
     return ()
 
 dt = 0.0125
@@ -54,9 +54,9 @@ mainIO = do
         -- send immediately sync
         t <- liftIO utcr
         let t' = UTCr (t+0.5)
-        (g, ig, b) <- send immediately $ do
             async $ b_alloc 1024 1 `whenDone` immediately $ \b -> do
                 sync' $ b_free b `whenDone` t' $ \() -> do
+        (g, ig, b) <- exec immediately $ do
                     g <- g_new_ AddToTail
                     ig <- g_new AddToTail g
                     return (g, ig, b)

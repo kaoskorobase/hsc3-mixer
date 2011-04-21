@@ -157,7 +157,7 @@ instance Node Synth where
     nodeId (Synth nid) = nid
 
 instance Resource Synth where
-    free = send immediately . n_free
+    free = exec immediately . n_free
 
 s_new :: MonadIO m => SynthDef -> AddAction -> Group -> [(String, Double)] -> SendT m Synth
 s_new d a g xs = do
@@ -183,7 +183,7 @@ instance Node Group where
     nodeId (Group nid) = nid
 
 instance Resource Group where
-    free = send immediately . n_free
+    free = exec immediately . n_free
 
 rootNode :: MonadIO m => ServerT m Group
 rootNode = liftM Group M.rootNodeId

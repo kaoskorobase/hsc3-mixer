@@ -11,7 +11,7 @@ module Sound.SC3.Server.Send
   , async
   , sync
   , sync'
-  , send
+  , exec
   ) where
 
 import           Control.Monad.IO.Class (MonadIO, liftIO)
@@ -132,8 +132,8 @@ sync' (Async m) = do
     return a
 
 -- | Run the SendT action and return the result.
-send :: MonadIO m => Time -> SendT m a -> ServerT m a
-send t m = do
+exec :: MonadIO m => Time -> SendT m a -> ServerT m a
+exec t m = do
     (a, osc, sids) <- runSendT t m
     -- liftIO $ print osc
     -- liftIO $ print (Seq.toList sids)
