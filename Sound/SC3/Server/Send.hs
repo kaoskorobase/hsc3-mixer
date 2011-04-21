@@ -122,6 +122,6 @@ exec t m = do
     (a, osc, sids) <- runSendT t m
     -- liftIO $ print osc
     -- liftIO $ print (Seq.toList sids)
-    maybe (return []) (flip M.waitForAll (map N.synced (Seq.toList sids))) osc
+    maybe (return ()) (flip M.waitForAll_ (map N.synced (Seq.toList sids))) osc
     Seq.mapM_ (M.free State.syncIdAllocator) sids
     return a
