@@ -14,7 +14,6 @@ module Sound.SC3.Server.Monad.Command
   , d_new
   , d_free
   -- * Resources
-  -- , Resource(..)
   -- ** Nodes
   , Node(..)
   , n_free
@@ -46,7 +45,7 @@ module Sound.SC3.Server.Monad.Command
   , b_zero
   , b_query
   -- ** Buses
-  , Bus
+  , Bus(..)
   , busId
   , numChannels
   , AudioBus(..)
@@ -60,16 +59,11 @@ module Sound.SC3.Server.Monad.Command
   ) where
 
 import qualified Codec.Digest.SHA as SHA
-import           Control.Applicative
 import           Control.Arrow (first)
-import           Control.Monad (liftM, unless, void)
-import           Control.Monad.IO.Class (MonadIO, liftIO)
+import           Control.Monad (liftM)
+import           Control.Monad.IO.Class (MonadIO)
 import qualified Data.ByteString.Lazy.Char8 as B
-import           Data.Sequence (Seq)
-import qualified Data.Sequence as Seq
-import           Sound.SC3 (Rate(..), Synthdef, UGen)
-import           Sound.SC3.Server.Monad (Server, ServerT, BufferId, BusId, NodeId, fork)
-import           Sound.SC3.Server.Allocator.Range (Range)
+import           Sound.SC3 (Rate(..), UGen)
 import qualified Sound.SC3.Server.Allocator.Range as Range
 import           Sound.SC3.Server.Monad hiding (sync, unsafeSync)
 import qualified Sound.SC3.Server.Monad as M
@@ -80,7 +74,7 @@ import           Sound.SC3.Server.Command (AddAction(..), PrintLevel(..))
 import qualified Sound.SC3.Server.Command as C
 import qualified Sound.SC3.Server.Command.Completion as C
 import qualified Sound.SC3.Server.Notification as N
-import           Sound.OpenSoundControl (OSC(..), Time(..), immediately)
+import           Sound.OpenSoundControl (OSC(..))
 
 -- ====================================================================
 -- Utils
@@ -98,12 +92,6 @@ status = M.waitFor C.status N.status_reply
 
 dumpOSC :: MonadIO m => PrintLevel -> ServerT m ()
 dumpOSC p = M.sync (C.dumpOSC p)
-
--- ====================================================================
--- Resource
-
-class Resource a where
-    free :: MonadIO m => a -> ServerT m ()
 
 -- ====================================================================
 -- Synth definitions
@@ -164,9 +152,6 @@ newtype Synth = Synth NodeId deriving (Eq, Ord, Show)
 instance Node Synth where
     nodeId (Synth nid) = nid
 
-instance Resource Synth where
-    free = exec immediately . n_free
-
 s_new :: MonadIO m => SynthDef -> AddAction -> Group -> [(String, Double)] -> SendT m Synth
 s_new d a g xs = do
     nid <- liftServer $ M.alloc M.nodeIdAllocator
@@ -189,9 +174,6 @@ newtype Group = Group NodeId deriving (Eq, Ord, Show)
 
 instance Node Group where
     nodeId (Group nid) = nid
-
-instance Resource Group where
-    free = exec immediately . n_free
 
 rootNode :: MonadIO m => ServerT m Group
 rootNode = liftM Group M.rootNodeId
@@ -224,9 +206,6 @@ g_dumpTree = sendMsg . C.g_dumpTree . map (first (fromIntegral . nodeId))
 -- Buffer
 
 newtype Buffer = Buffer { bufferId :: BufferId } deriving (Eq, Ord, Show)
-
-instance Resource Buffer where
-    free = M.free M.bufferIdAllocator . bufferId
 
 b_alloc :: MonadIO m => Int -> Int -> Async m Buffer
 b_alloc n c = mkAsync $ do
@@ -332,6 +311,7 @@ b_query (Buffer bid) = C.b_query [fromIntegral bid] `M.waitFor` N.b_info bid
 class Bus a where
     rate :: a -> Rate
     busIdRange :: a -> Range BusId
+    freeBus :: MonadIO m => a -> ServerT m ()
 
 busId :: Bus a => a -> BusId
 busId = Range.begin . busIdRange
@@ -347,9 +327,7 @@ newAudioBus = liftM AudioBus . M.allocRange M.audioBusIdAllocator
 instance Bus AudioBus where
     rate _ = AR
     busIdRange = audioBusId
-
-instance Resource AudioBus where
-    free = M.freeRange M.audioBusIdAllocator . audioBusId
+    freeBus = M.freeRange M.audioBusIdAllocator . audioBusId
 
 newtype ControlBus = ControlBus { controlBusId :: Range BusId } deriving (Eq, Show)
 
@@ -359,6 +337,4 @@ newControlBus = liftM ControlBus . M.allocRange M.controlBusIdAllocator
 instance Bus ControlBus where
     rate _ = KR
     busIdRange = controlBusId
-
-instance Resource ControlBus where
-    free = M.freeRange M.controlBusIdAllocator . controlBusId
+    freeBus = M.freeRange M.controlBusIdAllocator . controlBusId
