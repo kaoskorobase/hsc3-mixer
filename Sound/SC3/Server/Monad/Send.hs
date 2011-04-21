@@ -11,6 +11,7 @@ module Sound.SC3.Server.Monad.Send
   , async
   , sync
   , exec
+  , (!>)
   ) where
 
 import           Control.Arrow (second)
@@ -125,3 +126,7 @@ exec t m = do
     maybe (return ()) (flip M.waitForAll_ (map N.synced (Seq.toList sids))) osc
     Seq.mapM_ (M.free State.syncIdAllocator) sids
     return a
+
+-- | Infix operator version of 'exec'.
+(!>) :: MonadIO m => Time -> SendT m a -> ServerT m a
+(!>) = exec

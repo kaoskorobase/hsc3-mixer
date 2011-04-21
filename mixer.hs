@@ -1,37 +1,35 @@
-import Control.Monad (forever)
-import Sound.SC3.Server.Process.Monad
-import Reactive hiding (accumulate)
-import Sound.SC3.Server.Reactive
-import Sound.SC3.Server.Monad.Command
-import qualified Sound.SC3.Server.Monad as M
-import qualified Sound.SC3.Server.Notification as N
+import           Control.Concurrent
+import           Sound.SC3.Server.Process.Monad
+import           Reactive hiding (accumulate)
+import           Sound.SC3.Mixer
+import           Sound.SC3.Server.Monad.Command
+import           Sound.SC3.Server.Notification
+import           Sound.SC3.Server.Reactive
 import qualified Sound.SC3.Server.Command as C
-import Sound.OpenSoundControl (Time(..), immediately, pauseThreadUntil, utcr)
-import Control.Concurrent
-import Sound.SC3.Mixer
+import qualified Sound.OpenSoundControl as OSC
 
 playDefault t = do
     let dur = 1
         lat = 0.03
     r <- rootNode
-    synth <- exec (UTCr (t+lat)) $ s_new d_default AddToTail r []
+    synth <- t `addSeconds` lat !> s_new d_default AddToTail r []
     fork $ do
-        let t' = t + dur
-        liftIO $ pauseThreadUntil t'
-        exec (UTCr (t' + lat)) $ s_release 0 synth
+        let t' = t `addSeconds` dur
+        waitUntil t'
+        t' `addSeconds` lat !> s_release 0 synth
     return ()
 
 dt = 0.0125
 
 inputLoop src t = do
     fire src t
-    let t' = t + dt
-    pauseThreadUntil t'
+    let t' = t `addSeconds` dt
+    OSC.pauseThreadUntil (OSC.as_utcr t')
     inputLoop src t'
 
 mainR = do
     src <- newEventSource
-    forkIO . inputLoop src =<< utcr
+    forkIO . inputLoop src . OSC.UTCr =<< OSC.utcr
     withDefaultInternal $ do
     -- withDefaultSynth $ do
         -- sync immediately $ send $ C.dumpOSC C.TextPrinter
@@ -41,8 +39,8 @@ mainR = do
 
 ioLoop t = do
     playDefault t
-    let t' = t + dt
-    liftIO $ pauseThreadUntil t'
+    let t' = t `addSeconds` dt
+    waitUntil t'
     ioLoop t'
 
 mainIO = do
@@ -51,9 +49,9 @@ mainIO = do
         dumpOSC TextPrinter
         -- mkStrip >>= liftIO . print
         -- send immediately sync
-        t <- liftIO utcr
-        let t' = UTCr (t+5)
-        (g, ig, b) <- exec immediately $ do
+        t <- getTime
+        let t' = t `addSeconds` 5
+        (g, ig, b) <- immediately !> do
             b_alloc 1024 1 `whenDone` immediately $ \b -> do
                 x <- b_free b `whenDone` t' $ \() -> do
                     g <- g_new_ AddToTail
@@ -64,8 +62,8 @@ mainIO = do
         n_query g >>= liftIO . print
         b_query b >>= liftIO . print
         status >>= liftIO . print
-        waitFor (C.g_queryTree [(0, True)]) (N.hasAddress "/g_queryTree.reply") >>= liftIO . print
+        waitFor (C.g_queryTree [(0, True)]) (hasAddress "/g_queryTree.reply") >>= liftIO . print
         -- ioLoop =<< liftIO utcr
 
 main :: IO ()
-main = mainIO
+main = mainR
