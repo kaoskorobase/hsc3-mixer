@@ -3,7 +3,7 @@ module Sound.SC3.Server.Send
   ( SendT
   , Async
   , unsafeServer
-  , sendOSC
+  , sendMsg
   , mkAsync
   , mkAsync_
   , whenDone
@@ -55,15 +55,14 @@ modify = SendT . State.modify
 unsafeServer :: Monad m => ServerT m a -> SendT m a
 unsafeServer = SendT . Trans.lift
 
--- | Send an OSC packet.
+-- | Send an OSC message.
 --
--- Bundles are flattened into the resulting bundle, because the SuperCollider server doesn't handle nested bundles.
-sendOSC :: Monad m => OSC -> SendT m ()
-sendOSC osc@(Message _ _) = modify $ \s -> s { buildOSC = buildOSC s |> osc }
-sendOSC osc@(Bundle _ _)  = modify $ \s -> s { buildOSC = buildOSC s >< Seq.fromList (flatten osc) }
-    where
-        flatten msg@(Message _ _) = [msg]
-        flatten (Bundle _ xs) = concatMap flatten xs
+-- An error is signaled when attempting to send a bundle (@scsynth@ doesn't support nested bundles).
+sendMsg :: Monad m => OSC -> SendT m ()
+sendMsg osc =
+    case osc of
+        Message _ _ -> modify $ \s -> s { buildOSC = buildOSC s |> osc }
+        _ -> error "sendMsg: Cannot nest bundles"
 
 -- | Representation of an asynchronous server command.
 --
@@ -89,7 +88,7 @@ mkAsync_ osc = mkAsync $ return ((), osc)
 async :: Monad m => Async m a -> SendT m a
 async (Async m) = do
     (a, f) <- unsafeServer m
-    sendOSC (f Nothing)
+    sendMsg (f Nothing)
     return a
 
 -- | Execute an server-side action after the asynchronous command has finished.
@@ -99,7 +98,7 @@ whenDone :: Monad m => Async m a -> Time -> (a -> SendT m b) -> SendT m b
 whenDone (Async m) t f = do
     (a, appendCompletion) <- unsafeServer m
     (b, osc, sids) <- unsafeServer $ runSendT t (f a)
-    sendOSC (appendCompletion osc)
+    sendMsg (appendCompletion osc)
     modify $ \s -> s { syncIds = syncIds s >< sids }
     return b
 
@@ -108,7 +107,7 @@ sync :: MonadIO m => SendT m ()
 sync = do
     sid <- unsafeServer $ M.alloc State.syncIdAllocator
     modify $ \s -> s { syncIds = syncIds s |> sid }
-    sendOSC (C.sync (fromIntegral sid))
+    sendMsg (C.sync (fromIntegral sid))
 
 -- | Run the SendT action and return the result.
 exec :: MonadIO m => Time -> SendT m a -> ServerT m a

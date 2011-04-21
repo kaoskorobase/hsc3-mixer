@@ -120,7 +120,7 @@ d_new prefix ugen = mkAsync $ return (sd, C.d_recv (Synthdef.synthdef (name sd) 
 
 -- | Remove definition once all nodes using it have ended.
 d_free :: Monad m => SynthDef -> SendT m ()
-d_free = sendOSC . C.d_free . (:[]) . name
+d_free = sendMsg . C.d_free . (:[]) . name
 
 -- -- | Install a bytecode instrument definition.
 -- d_recv :: MonadIO m => Synthdef -> Async m ()
@@ -142,7 +142,7 @@ class Node a where
 
 n_free :: (Node a, MonadIO m) => a -> SendT m ()
 n_free n = do
-    sendOSC $ C.n_free [fromIntegral (nodeId n)]
+    sendMsg $ C.n_free [fromIntegral (nodeId n)]
     unsafeServer $ M.free M.nodeIdAllocator (nodeId n)
 
 n_query :: (Node a, MonadIO m) => a -> ServerT m N.NodeNotification
@@ -162,7 +162,7 @@ instance Resource Synth where
 s_new :: MonadIO m => SynthDef -> AddAction -> Group -> [(String, Double)] -> SendT m Synth
 s_new d a g xs = do
     nid <- unsafeServer $ M.alloc M.nodeIdAllocator
-    sendOSC $ C.s_new (name d) (fromIntegral nid) a (fromIntegral (nodeId g)) xs
+    sendMsg $ C.s_new (name d) (fromIntegral nid) a (fromIntegral (nodeId g)) xs
     return $ Synth nid
 
 s_new_ :: MonadIO m => SynthDef -> AddAction -> [(String, Double)] -> SendT m Synth
@@ -170,7 +170,7 @@ s_new_ d a xs = unsafeServer rootNode >>= \g -> s_new d a g xs
 
 s_release :: (Node a, MonadIO m) => Double -> a -> SendT m ()
 s_release r n = do
-    sendOSC (C.n_set1 (fromIntegral nid) "gate" r)
+    sendMsg (C.n_set1 (fromIntegral nid) "gate" r)
     unsafeServer $ M.free M.nodeIdAllocator nid
     where nid = nodeId n
 
@@ -191,26 +191,26 @@ rootNode = liftM Group M.rootNodeId
 g_new :: MonadIO m => AddAction -> Group -> SendT m Group
 g_new a p = do
     nid <- unsafeServer $ M.alloc State.nodeIdAllocator
-    sendOSC $ C.g_new [(fromIntegral nid, a, fromIntegral (nodeId p))]
+    sendMsg $ C.g_new [(fromIntegral nid, a, fromIntegral (nodeId p))]
     return $ Group nid
 
 g_new_ :: MonadIO m => AddAction -> SendT m Group
 g_new_ a = unsafeServer rootNode >>= g_new a
 
 g_deepFree :: Monad m => Group -> SendT m ()
-g_deepFree g = sendOSC $ C.g_deepFree [fromIntegral (nodeId g)]
+g_deepFree g = sendMsg $ C.g_deepFree [fromIntegral (nodeId g)]
 
 g_freeAll :: Monad m => Group -> SendT m ()
-g_freeAll g = sendOSC $ C.g_freeAll [fromIntegral (nodeId g)]
+g_freeAll g = sendMsg $ C.g_freeAll [fromIntegral (nodeId g)]
 
 g_head :: (Node n, Monad m) => Group -> n -> SendT m ()
-g_head g n = sendOSC $ C.g_head [(fromIntegral (nodeId g), fromIntegral (nodeId n))]
+g_head g n = sendMsg $ C.g_head [(fromIntegral (nodeId g), fromIntegral (nodeId n))]
 
 g_tail :: (Node n, Monad m) => Group -> n -> SendT m ()
-g_tail g n = sendOSC $ C.g_tail [(fromIntegral (nodeId g), fromIntegral (nodeId n))]
+g_tail g n = sendMsg $ C.g_tail [(fromIntegral (nodeId g), fromIntegral (nodeId n))]
 
 g_dumpTree :: Monad m => [(Group, Bool)] -> SendT m ()
-g_dumpTree = sendOSC . C.g_dumpTree . map (first (fromIntegral . nodeId))
+g_dumpTree = sendMsg . C.g_dumpTree . map (first (fromIntegral . nodeId))
 
 -- ====================================================================
 -- Buffer
