@@ -85,6 +85,14 @@ import           Sound.SC3.Server.Send
 import           Sound.OpenSoundControl (OSC(..), Time, immediately)
 
 -- ====================================================================
+-- Utils
+
+-- | Construct a function suitable for 'mkAsync'.
+mkC :: a -> (OSC -> a) -> (Maybe OSC -> a)
+mkC f _ Nothing    = f
+mkC _ f (Just osc) = f osc
+
+-- ====================================================================
 -- Master controls
 
 status :: MonadIO m => ServerT m N.Status
@@ -115,8 +123,10 @@ d_default = d_named "default"
 graphName = SHA.showBSasHex . SHA.hash SHA.SHA512 . B.pack . show . Synthdef.synth
 
 d_new :: Monad m => String -> UGen -> Async m SynthDef
-d_new prefix ugen = mkAsync $ return (sd, C.d_recv (Synthdef.synthdef (name sd) ugen))
-    where sd = SynthDef (prefix ++ "-" ++ graphName ugen)
+d_new prefix ugen = mkAsync $ return (sd, f)
+    where
+        sd = SynthDef (prefix ++ "-" ++ graphName ugen)
+        f osc = (mkC C.d_recv C.d_recv' osc) (Synthdef.synthdef (name sd) ugen)
 
 -- | Remove definition once all nodes using it have ended.
 d_free :: Monad m => SynthDef -> SendT m ()
@@ -223,16 +233,27 @@ instance Resource Buffer where
 b_alloc :: MonadIO m => Int -> Int -> Async m Buffer
 b_alloc n c = mkAsync $ do
     bid <- M.alloc State.bufferIdAllocator
-    return (Buffer bid, C.b_alloc (fromIntegral bid) n c)
+    let f osc = (mkC C.b_alloc C.b_alloc' osc) (fromIntegral bid) n c
+    return (Buffer bid, f)
 
-b_read :: MonadIO m => Buffer -> FilePath -> Maybe Int -> Maybe Int -> Maybe Int -> Bool -> Async m ()
-b_read (Buffer bid) path fileOffset numFrames bufferOffset leaveOpen =
-    mkAsync_ $ C.b_read
-                (fromIntegral bid) path
-                (maybe 0 id fileOffset)
-                (maybe (-1) id numFrames)
-                (maybe 0 id bufferOffset)
-                leaveOpen
+b_read :: MonadIO m =>
+    Buffer
+ -> FilePath
+ -> Maybe Int
+ -> Maybe Int
+ -> Maybe Int
+ -> Bool
+ -> Async m ()
+b_read (Buffer bid) path
+       fileOffset numFrames bufferOffset
+       leaveOpen = mkAsync_ f
+    where
+        f osc = (mkC C.b_read C.b_read' osc)
+                    (fromIntegral bid) path
+                    (maybe 0 id fileOffset)
+                    (maybe (-1) id numFrames)
+                    (maybe 0 id bufferOffset)
+                    leaveOpen
 
 data HeaderFormat =
     Aiff
@@ -270,24 +291,39 @@ sampleFormatString PcmDouble = "double"
 sampleFormatString PcmMulaw  = "mulaw"
 sampleFormatString PcmAlaw   = "alaw"
 
-b_write :: MonadIO m => Buffer -> FilePath -> HeaderFormat -> SampleFormat -> Maybe Int -> Maybe Int -> Bool -> Async m ()
-b_write (Buffer bid) path headerFormat sampleFormat fileOffset numFrames leaveOpen =
-    mkAsync_ $ C.b_write
-                (fromIntegral bid) path
-                (headerFormatString headerFormat)
-                (sampleFormatString sampleFormat)
-                (maybe 0 id fileOffset)
-                (maybe (-1) id numFrames)
-                leaveOpen
+b_write :: MonadIO m =>
+    Buffer
+ -> FilePath
+ -> HeaderFormat
+ -> SampleFormat
+ -> Maybe Int
+ -> Maybe Int
+ -> Bool
+ -> Async m ()
+b_write (Buffer bid) path
+        headerFormat sampleFormat
+        fileOffset numFrames
+        leaveOpen = mkAsync_ f
+    where
+        f osc = (mkC C.b_write C.b_write' osc)
+                    (fromIntegral bid) path
+                    (headerFormatString headerFormat)
+                    (sampleFormatString sampleFormat)
+                    (maybe 0 id fileOffset)
+                    (maybe (-1) id numFrames)
+                    leaveOpen
 
 b_free :: MonadIO m => Buffer -> Async m ()
 b_free b = mkAsync $ do
     let bid = bufferId b
     M.free State.bufferIdAllocator bid
-    return ((), C.b_free (fromIntegral bid))
+    let f osc = (mkC C.b_free C.b_free' osc) (fromIntegral bid)
+    return ((), f)
 
 b_zero :: MonadIO m => Buffer -> Async m ()
-b_zero (Buffer bid) = mkAsync_ (C.b_zero (fromIntegral bid))
+b_zero (Buffer bid) = mkAsync_ f
+    where
+        f osc = (mkC C.b_zero C.b_zero' osc) (fromIntegral bid)
 
 b_query :: MonadIO m => Buffer -> ServerT m N.BufferInfo
 b_query (Buffer bid) = C.b_query [fromIntegral bid] `M.waitFor` N.b_info bid

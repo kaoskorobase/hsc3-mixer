@@ -6,12 +6,15 @@ module Sound.SC3.Server.Send
   , sendMsg
   , mkAsync
   , mkAsync_
+  , mkAsyncCM
   , whenDone
   , async
   , sync
   , exec
   ) where
 
+import           Control.Arrow (second)
+import           Control.Monad (liftM)
 import           Control.Monad.IO.Class (MonadIO, liftIO)
 import qualified Control.Monad.Trans.Class as Trans
 import           Control.Monad.Trans.State (StateT(..))
@@ -71,18 +74,22 @@ data Async m a = Async (ServerT m (a, (Maybe OSC -> OSC)))
 
 -- | Create an asynchronous command.
 --
--- The completion message will be appended at the end of the message.
-mkAsync :: Monad m => ServerT m (a, OSC) -> Async m a
-mkAsync m = Async $ do
-    (a, osc) <- m
-    return (a, f osc)
+-- The first return value should be a server resource allocated on the client, the second a function that, given a completion packet, returns an OSC packet that asynchronously allocates the resource on the server.
+mkAsync :: ServerT m (a, (Maybe OSC -> OSC)) -> Async m a
+mkAsync = Async
+
+-- | Create an asynchronous command from a side effecting OSC function.
+mkAsync_ :: Monad m => (Maybe OSC -> OSC) -> Async m ()
+mkAsync_ f = mkAsync $ return ((), f)
+
+-- | Create an asynchronous command.
+--
+-- The completion message will be appended at the end of the returned message.
+mkAsyncCM :: Monad m => ServerT m (a, OSC) -> Async m a
+mkAsyncCM = mkAsync . liftM (second f)
     where
         f msg Nothing   = msg
         f msg (Just cm) = C.withCM msg cm
-
--- | Create an asynchronous command from a pure OSC message.
-mkAsync_ :: Monad m => OSC -> Async m ()
-mkAsync_ osc = mkAsync $ return ((), osc)
 
 -- | Execute an asynchronous command asynchronously.
 async :: Monad m => Async m a -> SendT m a
