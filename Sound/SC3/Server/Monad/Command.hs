@@ -164,7 +164,7 @@ s_new_ d a xs = liftServer rootNode >>= \g -> s_new d a g xs
 s_release :: (Node a, MonadIO m) => Double -> a -> SendT m ()
 s_release r n = do
     sendMsg (C.n_set1 (fromIntegral nid) "gate" r)
-    after (N.n_end nid) (M.free M.nodeIdAllocator nid)
+    after (N.n_end_ nid) (M.free M.nodeIdAllocator nid)
     where nid = nodeId n
 
 -- ====================================================================
