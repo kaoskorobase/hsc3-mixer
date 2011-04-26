@@ -8,6 +8,7 @@ import           Sound.SC3.Server.Monad.Command
 import           Sound.SC3.Server.Notification
 import           Sound.SC3.Server.Reactive
 import qualified Sound.SC3.Server.Command as C
+import           Sound.OpenSoundControl (immediately)
 import qualified Sound.OpenSoundControl as OSC
 
 dt = 0.00125
