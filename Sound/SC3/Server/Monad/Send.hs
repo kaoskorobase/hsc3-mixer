@@ -42,7 +42,7 @@ data SyncState = NoSync | NeedsSync | HasSync deriving (Eq, Show)
 
 data State m = State {
     buildOSC      :: Seq OSC
-  , notifications :: Seq (Notification ())
+  , notifications :: [Notification ()]
   , cleanup       :: ServerT m ()
   , syncState     :: SyncState
   }
@@ -53,7 +53,7 @@ newtype SendT m a = SendT (StateT (State m) (ServerT m) a)
 
 -- | Execute a SendT action, returning the result and the final state.
 runSendT :: Monad m => SyncState -> SendT m a -> ServerT m (a, State m)
-runSendT s (SendT m) = State.runStateT m (State Seq.empty Seq.empty (return ()) s)
+runSendT s (SendT m) = State.runStateT m (State Seq.empty [] (return ()) s)
 
 -- | 
 gets :: Monad m => (State m -> a) -> SendT m a
@@ -129,7 +129,7 @@ maybeSync = do
 
 -- | Register a cleanup action, to be executed after a notification has been received.
 after :: Monad m => Notification a -> ServerT m () -> SendT m ()
-after n m = modify $ \s -> s { notifications = notifications s |> fmap (const ()) n
+after n m = modify $ \s -> s { notifications = fmap (const ()) n : notifications s
                              , cleanup = cleanup s >> m }
 
 -- | Register a cleanup action, to be executed after all asynchronous commands and notification have finished.
@@ -145,7 +145,7 @@ whenDone (Async m) t f = do
     (b, s) <- liftServer $ runSendT NeedsSync $ do { b <- f a ; maybeSync ; return b }
     sendMsg $ g (Just (Bundle t (Seq.toList (buildOSC s))))
     modify $ \s' -> s' {
-        notifications = notifications s' >< notifications s
+        notifications = notifications s' ++ notifications s
       , cleanup = cleanup s' >> cleanup s
       , syncState = HasSync }
     return b
@@ -171,7 +171,7 @@ exec t m = do
         -- liftIO $ print (Bundle t (Seq.toList (buildOSC s)))
         -- liftIO $ print (Seq.toList sids)
         M.waitForAll_ (Bundle t (Seq.toList (buildOSC s)))
-                      (Seq.toList (notifications s))
+                      (notifications s)
     cleanup s
     return a
 
