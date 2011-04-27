@@ -26,6 +26,7 @@ playDefault t = do
         OSC.UTCr (t' + lat) ~> s_release (-1 - gate) synth
     return ()
 
+inputLoop :: EventSource Double -> Double -> IO ()
 inputLoop src t = do
     fire src t
     let t' = t + dt
