@@ -2,6 +2,7 @@ module Sound.SC3.Mixer where
 
 import           Control.Applicative
 import           Reactive hiding (accumulate)
+import           Sound.SC3.Mixer.SynthDefs
 import qualified Sound.SC3.Server.Allocator.Range as Range
 import           Sound.SC3.Server.Reactive
 import           Sound.SC3.Server.Monad.Command

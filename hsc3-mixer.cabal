@@ -19,6 +19,12 @@ Extra-Source-Files:
 
 Executable hsc3-mixer
     Main-Is: mixer.hs
+    Other-Modules:
+        Sound.SC3.Mixer
+        Sound.SC3.Mixer.SynthDefs
+        Sound.SC3.Server.Monad.Command
+        Sound.SC3.Server.Monad.Send
+        Sound.SC3.Server.Reactive
     Ghc-Options:      -W -threaded -rtsopts
     Ghc-Prof-Options: -W -threaded -rtsopts -auto-all
     Build-Depends:
