@@ -61,6 +61,7 @@ module Sound.SC3.Server.Monad.Command
   , busId
   , numChannels
   , AudioBus(..)
+  , newHardwareBus
   , newAudioBus
   , ControlBus(..)
   , newControlBus
@@ -74,7 +75,7 @@ import qualified Codec.Digest.SHA as SHA
 import           Control.Arrow (first)
 import           Control.Monad (liftM)
 import           Control.Monad.IO.Class (MonadIO)
-import qualified Data.ByteString.Lazy.Char8 as B
+import qualified Data.ByteString.Char8 as B
 import           Sound.SC3 (Rate(..), UGen)
 import qualified Sound.SC3.Server.Allocator.Range as Range
 import           Sound.SC3.Server.Monad hiding (sync, unsafeSync)
@@ -118,7 +119,7 @@ d_named = SynthDef
 d_default :: SynthDef
 d_default = d_named "default"
 
-graphName = SHA.showBSasHex . SHA.hash SHA.SHA512 . B.pack . show . Synthdef.synth
+graphName = SHA.showBSasHex . SHA.hash SHA.SHA256 . B.pack . show . Synthdef.synth
 
 d_new :: Monad m => String -> UGen -> Async m SynthDef
 d_new prefix ugen = mkAsync $ return (sd, f)
@@ -239,12 +240,12 @@ instance Node Synth where
 
 s_new :: MonadIO m => SynthDef -> AddAction -> Group -> [(String, Double)] -> SendT m Synth
 s_new d a g xs = do
-    nid <- liftServer $ M.alloc M.nodeIdAllocator
+    nid <- M.alloc M.nodeIdAllocator
     sendMsg $ C.s_new (name d) (fromIntegral nid) a (fromIntegral (nodeId g)) xs
     return $ Synth nid
 
 s_new_ :: MonadIO m => SynthDef -> AddAction -> [(String, Double)] -> SendT m Synth
-s_new_ d a xs = liftServer rootNode >>= \g -> s_new d a g xs
+s_new_ d a xs = rootNode >>= \g -> s_new d a g xs
 
 s_release :: (Node a, MonadIO m) => Double -> a -> SendT m ()
 s_release r n = do
@@ -260,17 +261,17 @@ newtype Group = Group NodeId deriving (Eq, Ord, Show)
 instance Node Group where
     nodeId (Group nid) = nid
 
-rootNode :: MonadIO m => ServerT m Group
+rootNode :: IdAllocation m => m Group
 rootNode = liftM Group M.rootNodeId
 
 g_new :: MonadIO m => AddAction -> Group -> SendT m Group
 g_new a p = do
-    nid <- liftServer $ M.alloc State.nodeIdAllocator
+    nid <- M.alloc State.nodeIdAllocator
     sendMsg $ C.g_new [(fromIntegral nid, a, fromIntegral (nodeId p))]
     return $ Group nid
 
 g_new_ :: MonadIO m => AddAction -> SendT m Group
-g_new_ a = liftServer rootNode >>= g_new a
+g_new_ a = rootNode >>= g_new a
 
 g_deepFree :: Monad m => Group -> SendT m ()
 g_deepFree g = sendMsg $ C.g_deepFree [fromIntegral (nodeId g)]
@@ -396,7 +397,7 @@ b_query (Buffer bid) = C.b_query [fromIntegral bid] `M.waitFor` N.b_info bid
 class Bus a where
     rate :: a -> Rate
     busIdRange :: a -> Range BusId
-    freeBus :: MonadIO m => a -> ServerT m ()
+    freeBus :: IdAllocation m => a -> m ()
 
 busId :: Bus a => a -> BusId
 busId = Range.begin . busIdRange
@@ -406,7 +407,10 @@ numChannels = Range.size . busIdRange
 
 newtype AudioBus = AudioBus { audioBusId :: Range BusId } deriving (Eq, Show)
 
-newAudioBus :: MonadIO m => Int -> ServerT m AudioBus
+newHardwareBus :: IdAllocation m => Int -> Int -> m AudioBus
+newHardwareBus n = return . AudioBus . Range.sized (fromIntegral n) . fromIntegral
+
+newAudioBus :: IdAllocation m => Int -> m AudioBus
 newAudioBus = liftM AudioBus . M.allocRange M.audioBusIdAllocator
 
 instance Bus AudioBus where

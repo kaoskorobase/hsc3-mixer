@@ -20,11 +20,11 @@ module Sound.SC3.Server.Monad.Send
   , Async
   , Deferred
   , module Control.Applicative
-  , liftServer
   , sendMsg
   , mkAsync
   , mkAsync_
   , mkAsyncCM
+  , Cleanup
   , after
   , finally
   , whenDone
@@ -42,7 +42,7 @@ import           Control.Monad.IO.Class (MonadIO(..))
 import qualified Control.Monad.Trans.Class as Trans
 import           Control.Monad.Trans.State.Strict (StateT(..))
 import qualified Control.Monad.Trans.State.Strict as State
-import           Sound.SC3.Server.Monad (ServerT)
+import           Sound.SC3.Server.Monad (IdAllocation, ServerT)
 import qualified Sound.SC3.Server.Monad as M
 import qualified Sound.SC3.Server.State as State
 import qualified Sound.SC3.Server.Command as C
@@ -84,7 +84,14 @@ setSyncState ss s | ss > syncState s = s { syncState = ss }
 
 -- | Representation of a server-side action (or sequence of actions).
 newtype SendT m a = SendT (StateT (State m) (ServerT m) a)
-                    deriving (Functor, Monad)
+                    deriving (Applicative, Functor, Monad)
+
+instance MonadIO m => IdAllocation (SendT m) where
+    rootNodeId = liftServer M.rootNodeId
+    alloc = liftServer . M.alloc
+    free a = liftServer . M.free a
+    allocRange a = liftServer . M.allocRange a
+    freeRange a = liftServer . M.freeRange a
 
 -- | Execute a SendT action, returning the result and the final state.
 runSendT :: Monad m => SyncState -> SendT m a -> ServerT m (a, State m)
@@ -122,7 +129,7 @@ sendMsg osc =
 -- server commands. There are two different ways of synchronising with an
 -- asynchronous command: using 'whenDone' for server-side synchronisation or
 -- observing the result of a 'SendT' action after calling 'exec'.
-data Async m a = Async (ServerT m (a, (Maybe OSC -> OSC)))
+newtype Async m a = Async (ServerT m (a, (Maybe OSC -> OSC)))
 
 -- | Representation of a deferred server resource.
 --
@@ -172,16 +179,20 @@ maybeSync = do
             after (N.synced sid) (M.free State.syncIdAllocator sid)
         _ -> return ()
 
+-- | Cleanup action newtype wrapper.
+newtype Cleanup m a = Cleanup (ServerT m a)
+                      deriving (Applicative, IdAllocation, Functor, Monad)
+
 -- | Register a cleanup action, to be executed after a notification has been
 -- received.
-after :: Monad m => Notification a -> ServerT m () -> SendT m ()
-after n m = modify $ \s -> s { notifications = fmap (const ()) n : notifications s
-                             , cleanup = cleanup s >> m }
+after :: Monad m => Notification a -> Cleanup m () -> SendT m ()
+after n (Cleanup m) = modify $ \s -> s { notifications = fmap (const ()) n : notifications s
+                                       , cleanup = cleanup s >> m }
 
 -- | Register a cleanup action, to be executed after all asynchronous commands
 -- and notification have finished.
-finally :: Monad m => ServerT m () -> SendT m ()
-finally m = modify $ \s -> s { cleanup = cleanup s >> m }
+finally :: Monad m => Cleanup m () -> SendT m ()
+finally (Cleanup m) = modify $ \s -> s { cleanup = cleanup s >> m }
 
 -- | Execute an server-side action after the asynchronous command has finished.
 --

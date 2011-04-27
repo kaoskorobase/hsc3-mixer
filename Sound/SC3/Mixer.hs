@@ -39,16 +39,25 @@ mkFader parent bus = do
         s <- s_new d AddToTail g [ ("bus", fromIntegral (busId bus)) ]
         return $ pure $ Fader g s
 
-mkStrip :: MonadIO m => Int -> ServerT m Strip
-mkStrip n = do
-    b <- newAudioBus n
-    immediately !> do
-        g <- g_new_ AddToTail
-        ig <- g_new AddToTail g
-        r1 <- mkRedirect g b
-        f <- mkFader g b
-        r2 <- mkRedirect g b
-        return $ pure (Strip b g ig r1) <*> f <*> pure r2
+data OutputBus = Hardware Int Int | Private Int deriving (Eq, Show)
+
+mkStrip :: MonadIO m => OutputBus -> SendT m (Deferred Strip)
+mkStrip o = do
+    b <- case o of
+            Hardware n i -> newHardwareBus n i
+            Private n    -> newAudioBus n
+    g <- g_new_ AddToTail
+    ig <- g_new AddToTail g
+    r1 <- mkRedirect g b
+    f <- mkFader g b
+    r2 <- mkRedirect g b
+    return $ pure (Strip b g ig r1) <*> f <*> pure r2
+
+setLevel :: MonadIO m => Double -> Strip -> SendT m ()
+setLevel x s = n_set (faderSynth (fader s)) [("level", x)]
+
+setMute :: MonadIO m => Bool -> Strip -> SendT m ()
+setMute x s = n_set (faderSynth (fader s)) [("mute", fromIntegral (fromEnum x :: Int))]
 
 play :: MonadIO m => Strip -> SynthDef -> AddAction -> [(String, Double)] -> SendT m Synth
 play s d a xs = s_new d a (inputGroup s) (("out", fromIntegral (busId (bus s))):xs)

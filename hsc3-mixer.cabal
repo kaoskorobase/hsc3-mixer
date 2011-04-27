@@ -34,6 +34,7 @@ Executable hsc3-mixer
       , hosc >= 0.10
       , hsc3 >= 0.10
       , hsc3-server
+      , random
       , reactive-banana
       , SHA2
       , transformers

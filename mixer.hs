@@ -1,77 +1,103 @@
 import           Control.Applicative
 import           Control.Concurrent
+import           Control.Monad
 import           Control.Monad.IO.Class (MonadIO)
 import           Sound.SC3.Server.Process.Monad
 import           Reactive hiding (accumulate)
+import qualified Reactive as R
 import           Sound.SC3.Mixer
 import           Sound.SC3.Server.Monad.Command
 import           Sound.SC3.Server.Notification
 import           Sound.SC3.Server.Reactive
 import qualified Sound.SC3.Server.Command as C
-import           Sound.OpenSoundControl (immediately)
+import           Sound.OpenSoundControl (Datum(..), OSC(..), immediately)
 import qualified Sound.OpenSoundControl as OSC
+import qualified Sound.OpenSoundControl.Transport.UDP as OSC
+import           System.Random
 
 dt = 0.00125
 dur = 0.2
 gate = 0.2
 lat = 0.03
 
-playDefault :: MonadIO m => Double -> ServerT m ()
-playDefault t = do
-    r <- rootNode
-    synth <- OSC.UTCr (t + lat) ~> s_new d_default AddToTail r []
+playDefault :: MonadIO m => Strip -> ServerT m ()
+playDefault s = do
+    t <- liftIO $ OSC.utcr
+    f <- liftIO $ randomRIO (399,401)
+    synth <- OSC.UTCr (t + lat) ~> play s d_default AddToTail [("freq", f)]
     fork $ do
         let t' = t + dur
         liftIO $ OSC.pauseThreadUntil t'
         OSC.UTCr (t' + lat) ~> s_release (-1 - gate) synth
     return ()
 
-inputLoop :: EventSource Double -> Double -> IO ()
-inputLoop src t = do
-    fire src t
-    let t' = t + dt
-    OSC.pauseThreadUntil t'
-    inputLoop src t'
-
-mainR = do
+mkOSCServer :: String -> Int -> Prepare (Event OSC, Prepare ())
+mkOSCServer host port = do
+    t <- OSC.udpServer host port
     src <- newEventSource
-    forkIO . inputLoop src =<< OSC.utcr
-    -- withDefaultInternal $ do
-    withDefaultSynth $ do
-        -- dumpOSC TextPrinter
-        -- sync immediately $ send $ C.dumpOSC C.TextPrinter
-        b <- accumulate (\t _ -> playDefault t) () (fromEventSource src)
-        liftIO $ reactimate $ fmap return $ changes b
-        liftIO $ threadDelay (truncate (300e6))
+    return (fromEventSource src, loop t src)
+    where
+        loop t src = do
+            osc <- OSC.recv t
+            fire src osc
+            loop t src
 
-ioLoop t = do
-    playDefault t
-    let t' = t + dt
-    liftIO $ OSC.pauseThreadUntil t'
-    ioLoop t'
+address :: String -> Event OSC -> Event OSC
+address cmd = R.filter f
+    where
+        f (Message cmd' _) = cmd == cmd'
+        f _ = False
 
-mainIO = do
-    withDefaultInternal $ do
-    -- withDefaultSynth $ do
-        dumpOSC TextPrinter
-        -- mkStrip >>= liftIO . print
-        -- send immediately sync
-        t <- liftIO $ OSC.utcr
-        let t' = t + 5
-        (b0, (g, ig, b)) <- immediately !> do
-            b0 <- async $ b_alloc 1024 1
-            x <- b_alloc 1024 1 `whenDone` immediately $ \b -> do
-                b_free b `whenDone` OSC.UTCr t' $ \() -> do
-                    g <- g_new_ AddToTail
-                    ig <- g_new AddToTail g
-                    return $ pure (g, ig, b)
-            return $ (,) <$> b0 <*> x
-        n_query g >>= liftIO . print
-        b_query b >>= liftIO . print
-        b_query b0 >>= liftIO . print
-        status >>= liftIO . print
-        waitFor (C.g_queryTree [(0, True)]) (hasAddress "/g_queryTree.reply") >>= liftIO . print
-        -- ioLoop =<< liftIO utcr
+oscFloatB :: String -> Double -> Event OSC -> Behavior Double
+oscFloatB cmd x0 = R.accumulate f x0
+    where
+        f (Message cmd' [Float x']) x
+            | cmd == cmd' = x'
+        f _ x = x
+
+bang :: (Double -> Double -> Bool) -> Behavior Double -> Event ()
+bang f = R.filterChanges . fmap snd . changes . R.accumulate' g (Nothing, undefined) . changes
+    where
+        g x (Nothing, _) = (Just x, Keep)
+        g x (Just x', _) = (Just x, if f x' x then Change () else Keep)
+
+threshold :: Double -> Double -> Double -> Bool
+threshold t x' x = x' < t && x > t || x < t && x' > t
+
+toggle :: Event () -> Behavior Bool
+toggle = R.accumulate' (const not) False
+
+data StripInput m = StripInput {
+    level :: Behavior Double
+  , mute  :: Behavior Bool
+  , event :: Event (Strip -> ServerT m ())
+  }
+
+strip :: Int -> StripInput IO -> ServerT IO (Behavior Strip)
+strip n i = do
+    s0 <- immediately !> mkStrip (Hardware n 0)
+    accumulate f s0 (changes ((,) <$> level i <*> mute i) `merge` event i)
+    where
+        f e s = do
+            case e of
+                Left (l, m) -> immediately ~> do { setLevel l s ; setMute m s }
+                Right g -> g s
+            return s
 
 main :: IO ()
-main = mainR
+main = do
+    (osc, srv) <- mkOSCServer "127.0.0.1" 7800
+    -- withDefaultSynth $ do
+    withDefaultInternal $ do
+        -- dumpOSC TextPrinter
+        -- sync immediately $ send $ C.dumpOSC C.TextPrinter
+        -- b <- accumulate (\t _ -> playDefault t) () osc
+        let i = StripInput {
+            level = oscFloatB "/midi/cc3/1" 0 osc
+          , mute = toggle $ bang (threshold 0.5) $ oscFloatB "/midi/cc4/1" 0 osc
+          , event = (const playDefault) `fmap` address "/midi/cc5/1" osc
+          }
+        b <- strip 2 i
+        liftIO $ reactimate $ fmap (const (return ())) $ changes b
+        -- liftIO $ reactimate $ fmap print $ changes $ mute i
+        liftIO srv
