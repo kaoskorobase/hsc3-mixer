@@ -1,15 +1,16 @@
 module Sound.SC3.Mixer where
 
 import           Control.Applicative
+import           Control.Monad (liftM)
+import           Control.Monad.IO.Class (MonadIO)
 import           Reactive hiding (accumulate)
 import           Sound.SC3.Mixer.SynthDefs
-import qualified Sound.SC3.Server.Allocator.Range as Range
 import           Sound.SC3.Server.Reactive
 import           Sound.SC3.Server.Monad.Command
 import           Sound.OpenSoundControl (immediately)
 
 data Redirect = Redirect {
-    redirectGroup :: NodeId
+    redirectGroup :: Group
   } deriving (Show)
 
 data Fader = Fader {
@@ -18,34 +19,39 @@ data Fader = Fader {
   } deriving (Show)
 
 data Strip = Strip {
-    group :: Group
+    bus :: AudioBus
+  , group :: Group
   , inputGroup :: Group
-  -- , preFaderRedirect :: Redirect
-  -- , fader :: Fader
-  -- , postFaderRedirect :: Redirect
-  , bus :: AudioBus
+  , preFaderRedirect :: Redirect
+  , fader :: Fader
+  , postFaderRedirect :: Redirect
   } deriving (Show)
 
 data Command = Command
 
--- data MultiChannelSynthDef = MultiChannelSynthDef String (Int -> UGen) [(Int, SynthDef)]
--- 
--- mkFader :: MonadIO m => Group -> AudioBus -> ServerT m Fader
--- mkFader parent = do
---     immediately !> do
---         g <- g_new AddToTail parent
---         d <- d_new "fader" faderDef `whenDone` immediately $ do
---             s <- s_new d AddToTail g []
---             sync
---             return $ Fader g s
-        
-mkStrip :: Server Strip
-mkStrip = do
-    b <- newAudioBus 2
-    exec immediately $ do
+mkRedirect :: MonadIO m => Group -> AudioBus -> SendT m Redirect
+mkRedirect g _ = liftM Redirect (g_new AddToTail g)
+
+mkFader :: MonadIO m => Group -> AudioBus -> SendT m (Deferred Fader)
+mkFader parent bus = do
+    g <- g_new AddToTail parent
+    d_new "fader" (faderDef (numChannels bus)) `whenDone` immediately $ \d -> do
+        s <- s_new d AddToTail g [ ("bus", fromIntegral (busId bus)) ]
+        return $ pure $ Fader g s
+
+mkStrip :: MonadIO m => Int -> ServerT m Strip
+mkStrip n = do
+    b <- newAudioBus n
+    immediately !> do
         g <- g_new_ AddToTail
         ig <- g_new AddToTail g
-        return $ pure $ Strip g ig b
+        r1 <- mkRedirect g b
+        f <- mkFader g b
+        r2 <- mkRedirect g b
+        return $ pure (Strip b g ig r1) <*> f <*> pure r2
+
+play :: MonadIO m => Strip -> SynthDef -> AddAction -> [(String, Double)] -> SendT m Synth
+play s d a xs = s_new d a (inputGroup s) (("out", fromIntegral (busId (bus s))):xs)
 
 -- data Mixer = Mixer
 
