@@ -8,6 +8,7 @@ module Sound.SC3.Server.Monad.Command
   , PrintLevel(..)
   , dumpOSC
   -- * Synth definitions
+  , SynthDef(name)
   -- , d_recv
   -- , d_load
   -- , d_loadDir
