@@ -123,7 +123,9 @@ graphName = SHA.showBSasHex . SHA.hash SHA.SHA512 . B.pack . show . Synthdef.syn
 d_new :: Monad m => String -> UGen -> Async m SynthDef
 d_new prefix ugen = mkAsync $ return (sd, f)
     where
-        sd = SynthDef (prefix ++ "-" ++ graphName ugen)
+        -- FIXME: Synthdef names can only be 31 bytes long!
+        -- sd = SynthDef (prefix ++ "-" ++ graphName ugen)
+        sd = SynthDef prefix
         f osc = (mkC C.d_recv C.d_recv' osc) (Synthdef.synthdef (name sd) ugen)
 
 -- | Remove definition once all nodes using it have ended.
