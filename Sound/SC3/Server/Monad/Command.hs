@@ -1,4 +1,6 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE FlexibleInstances
+           , GeneralizedNewtypeDeriving
+           , MultiParamTypeClasses #-}
 module Sound.SC3.Server.Monad.Command
   (
   -- * Master controls
@@ -16,9 +18,18 @@ module Sound.SC3.Server.Monad.Command
   -- * Resources
   -- ** Nodes
   , Node(..)
-  , n_free
-  , n_query
   , AddAction(..)
+  , n_after
+  , n_before
+  , n_fill
+  , n_free
+  , BusMapping(..)
+  , n_query_
+  , n_query
+  , n_run_
+  , n_set
+  , n_setn
+  , n_trace
   -- *** Synths
   , Synth(..)
   , s_new
@@ -136,13 +147,84 @@ d_free = sendMsg . C.d_free . (:[]) . name
 class Node a where
     nodeId :: a -> NodeId
 
+-- | Place node @a@ after node @b@.
+n_after :: (Node a, Node b, Monad m) => a -> b -> SendT m ()
+n_after a b = sendMsg $ C.n_after [(fromIntegral (nodeId a), fromIntegral (nodeId b))]
+
+-- | Place node @a@ before node @b@.
+n_before :: (Node a, Node b, Monad m) => a -> b -> SendT m ()
+n_before a b = sendMsg $ C.n_after [(fromIntegral (nodeId a), fromIntegral (nodeId b))]
+
+-- | Fill ranges of a node's control values.
+n_fill :: (Node a, Monad m) => a -> [(String, Int, Double)] -> SendT m ()
+n_fill n = sendMsg . C.n_fill (fromIntegral (nodeId n))
+
+-- | Delete a node.
 n_free :: (Node a, MonadIO m) => a -> SendT m ()
 n_free n = do
     sendMsg $ C.n_free [fromIntegral (nodeId n)]
-    liftServer $ M.free M.nodeIdAllocator (nodeId n)
+    finally $ M.free M.nodeIdAllocator (nodeId n)
 
+-- | Mapping node controls to buses.
+class BusMapping n b where
+    -- | Map a node's controls to read from a control bus.
+    n_map :: (Node n, Bus b, Monad m) => n -> String -> b -> SendT m ()
+    -- | Remove a control's mapping to a control bus.
+    n_unmap :: (Node n, Bus b, Monad m) => n -> String -> b -> SendT m ()
+
+instance BusMapping n ControlBus where
+    n_map n c b = sendMsg msg
+        where
+            nid = fromIntegral (nodeId n)
+            bid = fromIntegral (busId b)
+            msg = if numChannels b > 1
+                  then C.n_mapn nid [(c, bid, numChannels b)]
+                  else C.n_map  nid [(c, bid)]
+    n_unmap n c b = sendMsg msg
+        where
+            nid = fromIntegral (nodeId n)
+            msg = if numChannels b > 1
+                  then C.n_mapn nid [(c, -1, numChannels b)]
+                  else C.n_map  nid [(c, -1)]
+
+instance BusMapping n AudioBus where
+    n_map n c b = sendMsg msg
+        where
+            nid = fromIntegral (nodeId n)
+            bid = fromIntegral (busId b)
+            msg = if numChannels b > 1
+                  then C.n_mapan nid [(c, bid, numChannels b)]
+                  else C.n_mapa  nid [(c, bid)]
+    n_unmap n c b = sendMsg msg
+        where
+            nid = fromIntegral (nodeId n)
+            msg = if numChannels b > 1
+                  then C.n_mapan nid [(c, -1, numChannels b)]
+                  else C.n_mapa  nid [(c, -1)]
+
+-- | Query a node.
+n_query_ :: (Node a, Monad m) => a -> SendT m ()
+n_query_ n = sendMsg $ C.n_query [fromIntegral (nodeId n)]
+
+-- | Query a node.
 n_query :: (Node a, MonadIO m) => a -> ServerT m N.NodeNotification
-n_query n = M.waitFor (C.n_query [(fromIntegral (nodeId n))]) (N.n_info (nodeId n))
+n_query n = M.waitFor (C.n_query [fromIntegral (nodeId n)]) (N.n_info (nodeId n))
+
+-- | Turn node on or off.
+n_run_ :: (Node a, Monad m) => a -> Bool -> SendT m ()
+n_run_ n b = sendMsg $ C.n_run [(fromIntegral (nodeId n), b)]
+
+-- | Set a node's control values.
+n_set :: (Node a, Monad m) => a -> [(String, Double)] -> SendT m ()
+n_set n = sendMsg . C.n_set (fromIntegral (nodeId n))
+
+-- | Set ranges of a node's control values.
+n_setn :: (Node a, Monad m) => a -> [(String, [Double])] -> SendT m ()
+n_setn n = sendMsg . C.n_setn (fromIntegral (nodeId n))
+
+-- | Trace a node.
+n_trace :: (Node a, Monad m) => a -> SendT m ()
+n_trace n = sendMsg $ C.n_trace [fromIntegral (nodeId n)]
 
 -- ====================================================================
 -- Synth
