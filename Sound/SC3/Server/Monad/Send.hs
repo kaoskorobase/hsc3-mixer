@@ -40,8 +40,8 @@ import           Control.Arrow (second)
 import           Control.Monad (liftM)
 import           Control.Monad.IO.Class (MonadIO(..))
 import qualified Control.Monad.Trans.Class as Trans
-import           Control.Monad.Trans.State.Strict (StateT(..))
-import qualified Control.Monad.Trans.State.Strict as State
+import           Control.Monad.Trans.State (StateT(..))
+import qualified Control.Monad.Trans.State as State
 import           Data.IORef
 import           Sound.SC3.Server.Monad (MonadIdAllocator, ServerT)
 import qualified Sound.SC3.Server.Monad as M
