@@ -26,6 +26,7 @@ module Sound.SC3.Server.Monad.Send
   , mkAsyncCM
   , Cleanup
   , after
+  , after_
   , finally
   , whenDone
   , async
@@ -42,6 +43,7 @@ import           Control.Monad.IO.Class (MonadIO(..))
 import qualified Control.Monad.Trans.Class as Trans
 import           Control.Monad.Trans.State.Strict (StateT(..))
 import qualified Control.Monad.Trans.State.Strict as State
+import           Data.IORef
 import           Sound.SC3.Server.Monad (MonadIdAllocator, ServerT)
 import qualified Sound.SC3.Server.Monad as M
 import qualified Sound.SC3.Server.State as State
@@ -59,10 +61,10 @@ data SyncState =
 
 -- | Internal state used for constructing bundles from 'SendT' actions.
 data State m = State {
-    buildOSC      :: [OSC]              -- ^ Currrent list of OSC messages.
-  , notifications :: [Notification ()]  -- ^ Current list of notifications to synchronise on.
-  , cleanup       :: ServerT m ()       -- ^ Cleanup action to deallocate resources.
-  , syncState     :: SyncState          -- ^ Synchronisation barrier state.
+    buildOSC      :: [OSC]                  -- ^ Currrent list of OSC messages.
+  , notifications :: [Notification (IO ())] -- ^ Current list of notifications to synchronise on.
+  , cleanup       :: ServerT m ()           -- ^ Cleanup action to deallocate resources.
+  , syncState     :: SyncState              -- ^ Synchronisation barrier state.
   }
 
 -- | Construct a 'SendT' state with a given synchronisation state.
@@ -135,19 +137,23 @@ newtype Async m a = Async (ServerT m (a, (Maybe OSC -> OSC)))
 
 -- | Representation of a deferred server resource.
 --
--- Deferred resources can only be inspected from with a 'whenDone' action or
--- as a return value of the 'SendT' action after 'exec' has been called.
+-- Deferred resource values can only be observed a return value of the 'SendT'
+-- action after 'exec' has been called.
 --
 -- Deferred is has 'Applicative' and 'Functor' instances, so that complex
 -- values can be built from simple ones.
-newtype Deferred a = Deferred a deriving (Show)
+newtype Deferred a = Deferred (IO a)
+
+-- | Construct a deferred value from an IO action.
+deferredIO :: IO a -> Deferred a
+deferredIO = Deferred
 
 instance Functor Deferred where
-    fmap f (Deferred a) = Deferred (f a)
+    fmap f (Deferred a) = Deferred (f `fmap` a)
 
 instance Applicative Deferred where
-    pure = Deferred
-    (<*>) (Deferred f) (Deferred a) = Deferred (f a)
+    pure = Deferred . pure
+    (<*>) (Deferred f) (Deferred a) = Deferred (f <*> a)
 
 -- | Create an asynchronous command.
 --
@@ -178,7 +184,7 @@ maybeSync = do
         NeedsSync -> do
             sid <- liftServer $ M.alloc State.syncIdAllocator
             sendMsg (C.sync (fromIntegral sid))
-            after (N.synced sid) (M.free State.syncIdAllocator sid)
+            after_ (N.synced sid) (M.free State.syncIdAllocator sid)
         _ -> return ()
 
 -- | Cleanup action newtype wrapper.
@@ -186,10 +192,19 @@ newtype Cleanup m a = Cleanup (ServerT m a)
                       deriving (Applicative, MonadIdAllocator, Functor, Monad)
 
 -- | Register a cleanup action, to be executed after a notification has been
--- received.
-after :: Monad m => Notification a -> Cleanup m () -> SendT m ()
-after n (Cleanup m) = modify $ \s -> s { notifications = fmap (const ()) n : notifications s
-                                       , cleanup = cleanup s >> m }
+-- received and return the deferred notification result.
+after :: MonadIO m => Notification a -> Cleanup m () -> SendT m (Deferred a)
+after n (Cleanup m) = do
+    v <- liftServer $ liftIO $ newIORef (error "BUG: after: uninitialized IORef")
+    modify $ \s -> s { notifications = fmap (writeIORef v) n : notifications s
+                     , cleanup = cleanup s >> m }
+    return $ deferredIO (readIORef v)
+
+-- | Register a cleanup action, to be executed after a notification has been
+-- received and ignore the notification result.
+after_ :: Monad m => Notification a -> Cleanup m () -> SendT m ()
+after_ n (Cleanup m) = modify $ \s -> s { notifications = fmap (const (return ())) n : notifications s
+                                        , cleanup = cleanup s >> m }
 
 -- | Register a cleanup action, to be executed after all asynchronous commands
 -- and notification have finished.
@@ -227,9 +242,9 @@ exec t m = do
     (Deferred a, s) <- runSendT NoSync $ do { a <- m ; maybeSync ; return a }
     case getOSC s of
         [] -> return ()
-        osc -> M.waitForAll_ (Bundle t osc) (notifications s)
+        osc -> M.waitForAll (Bundle t osc) (notifications s) >>= liftIO . sequence_
     cleanup s
-    return a
+    liftIO a
 
 -- | Infix operator version of 'exec'.
 (!>) :: MonadIO m => Time -> SendT m (Deferred a) -> ServerT m a

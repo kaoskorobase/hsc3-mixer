@@ -211,8 +211,8 @@ n_query_ :: (Node a, Monad m) => a -> SendT m ()
 n_query_ n = sendMsg $ C.n_query [fromIntegral (nodeId n)]
 
 -- | Query a node.
-n_query :: (Node a, MonadIO m) => a -> ServerT m N.NodeNotification
-n_query n = M.waitFor (C.n_query [fromIntegral (nodeId n)]) (N.n_info (nodeId n))
+n_query :: (Node a, MonadIO m) => a -> SendT m (Deferred N.NodeNotification)
+n_query n = n_query_ n >> after (N.n_info (nodeId n)) (return ())
 
 -- | Turn node on or off.
 n_run_ :: (Node a, Monad m) => a -> Bool -> SendT m ()
@@ -250,7 +250,7 @@ s_new_ d a xs = rootNode >>= \g -> s_new d a g xs
 s_release :: (Node a, MonadIO m) => Double -> a -> SendT m ()
 s_release r n = do
     sendMsg (C.n_set1 (fromIntegral nid) "gate" r)
-    after (N.n_end_ nid) (M.free M.nodeIdAllocator nid)
+    after_ (N.n_end_ nid) (M.free M.nodeIdAllocator nid)
     where nid = nodeId n
 
 -- ====================================================================
