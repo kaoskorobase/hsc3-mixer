@@ -51,8 +51,13 @@ address cmd = R.filter f
 oscFloatB :: String -> Double -> Event OSC -> Behavior Double
 oscFloatB cmd x0 = R.accumulate f x0
     where
-        f (Message cmd' [Float x']) x
-            | cmd == cmd' = x'
+        f (Message cmd' [d]) x
+            | cmd == cmd' =
+                case d of
+                    Float x' -> x'
+                    Double x' -> x'
+                    Int x' -> fromIntegral x'
+                    _ -> x
         f _ x = x
 
 bang :: (Double -> Double -> Bool) -> Behavior Double -> Event ()
