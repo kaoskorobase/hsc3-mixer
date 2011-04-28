@@ -42,7 +42,7 @@ import           Control.Monad.IO.Class (MonadIO(..))
 import qualified Control.Monad.Trans.Class as Trans
 import           Control.Monad.Trans.State.Strict (StateT(..))
 import qualified Control.Monad.Trans.State.Strict as State
-import           Sound.SC3.Server.Monad (IdAllocation, ServerT)
+import           Sound.SC3.Server.Monad (MonadIdAllocator, ServerT)
 import qualified Sound.SC3.Server.Monad as M
 import qualified Sound.SC3.Server.State as State
 import qualified Sound.SC3.Server.Command as C
@@ -86,10 +86,12 @@ setSyncState ss s | ss > syncState s = s { syncState = ss }
 newtype SendT m a = SendT (StateT (State m) (ServerT m) a)
                     deriving (Applicative, Functor, Monad)
 
-instance MonadIO m => IdAllocation (SendT m) where
+instance MonadIO m => MonadIdAllocator (SendT m) where
     rootNodeId = liftServer M.rootNodeId
     alloc = liftServer . M.alloc
     free a = liftServer . M.free a
+    allocMany a = liftServer . M.allocMany a
+    freeMany a = liftServer . M.freeMany a
     allocRange a = liftServer . M.allocRange a
     freeRange a = liftServer . M.freeRange a
 
@@ -181,7 +183,7 @@ maybeSync = do
 
 -- | Cleanup action newtype wrapper.
 newtype Cleanup m a = Cleanup (ServerT m a)
-                      deriving (Applicative, IdAllocation, Functor, Monad)
+                      deriving (Applicative, MonadIdAllocator, Functor, Monad)
 
 -- | Register a cleanup action, to be executed after a notification has been
 -- received.

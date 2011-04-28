@@ -261,7 +261,7 @@ newtype Group = Group NodeId deriving (Eq, Ord, Show)
 instance Node Group where
     nodeId (Group nid) = nid
 
-rootNode :: IdAllocation m => m Group
+rootNode :: MonadIdAllocator m => m Group
 rootNode = liftM Group M.rootNodeId
 
 g_new :: MonadIO m => AddAction -> Group -> SendT m Group
@@ -397,7 +397,7 @@ b_query (Buffer bid) = C.b_query [fromIntegral bid] `M.waitFor` N.b_info bid
 class Bus a where
     rate :: a -> Rate
     busIdRange :: a -> Range BusId
-    freeBus :: IdAllocation m => a -> m ()
+    freeBus :: MonadIdAllocator m => a -> m ()
 
 busId :: Bus a => a -> BusId
 busId = Range.begin . busIdRange
@@ -407,10 +407,10 @@ numChannels = Range.size . busIdRange
 
 newtype AudioBus = AudioBus { audioBusId :: Range BusId } deriving (Eq, Show)
 
-newHardwareBus :: IdAllocation m => Int -> Int -> m AudioBus
+newHardwareBus :: MonadIdAllocator m => Int -> Int -> m AudioBus
 newHardwareBus n = return . AudioBus . Range.sized (fromIntegral n) . fromIntegral
 
-newAudioBus :: IdAllocation m => Int -> m AudioBus
+newAudioBus :: MonadIdAllocator m => Int -> m AudioBus
 newAudioBus = liftM AudioBus . M.allocRange M.audioBusIdAllocator
 
 instance Bus AudioBus where
