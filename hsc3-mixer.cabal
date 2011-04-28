@@ -39,6 +39,22 @@ Executable hsc3-mixer
       , SHA2
       , transformers
 
+Executable hsc3-example
+    Main-Is: example.hs
+    Ghc-Options:      -W -threaded -rtsopts
+    Ghc-Prof-Options: -W -threaded -rtsopts -auto-all
+    Build-Depends:
+        base >= 4 && < 5
+      , bytestring
+      , containers
+      , hosc >= 0.10
+      , hsc3 >= 0.10
+      , hsc3-server
+      , random
+      , reactive-banana
+      , SHA2
+      , transformers
+
 -- Library
 --     Exposed-Modules:
 --         Sound.SC3.Server.Allocator
