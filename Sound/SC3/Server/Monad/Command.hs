@@ -76,7 +76,6 @@ import qualified Codec.Digest.SHA as SHA
 import           Control.Arrow (first)
 import           Control.Monad (liftM)
 import           Control.Monad.IO.Class (MonadIO)
-import qualified Data.ByteString.Lazy.Char8 as B
 import           Sound.SC3 (Rate(..), UGen)
 import qualified Sound.SC3.Server.Allocator.Range as Range
 import           Sound.SC3.Server.Monad hiding (sync, unsafeSync)
