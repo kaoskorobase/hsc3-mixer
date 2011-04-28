@@ -20,7 +20,6 @@ module Sound.SC3.Server.Monad.Send
   , Async
   , Deferred
   , module Control.Applicative
-  , sendMsg
   , mkAsync
   , mkAsync_
   , mkAsyncCM
@@ -97,6 +96,12 @@ instance MonadIO m => MonadIdAllocator (SendT m) where
     allocRange a = liftServer . M.allocRange a
     freeRange a = liftServer . M.freeRange a
 
+-- | Bundles are flattened into the resulting bundle because @scsynth@ doesn't
+-- support nested bundles.
+instance Monad m => MonadSendOSC (SendT m) where
+    send osc@(Message _ _) = modify (pushOSC osc)
+    send (Bundle _ xs)     = mapM_ send xs
+
 -- | Execute a SendT action, returning the result and the final state.
 runSendT :: Monad m => SyncState -> SendT m a -> ServerT m (a, State m)
 runSendT s (SendT m) = State.runStateT m (mkState s)
@@ -116,16 +121,6 @@ modify = SendT . State.modify
 -- synchronisation primitives will not work as expected.
 liftServer :: Monad m => ServerT m a -> SendT m a
 liftServer = SendT . Trans.lift
-
--- | Send an OSC message.
---
--- An error is signaled when attempting to send a bundle (@scsynth@ doesn't
--- support nested bundles).
-sendMsg :: Monad m => OSC -> SendT m ()
-sendMsg osc =
-    case osc of
-        Message _ _ -> modify (pushOSC osc)
-        _ -> fail "sendMsg: Cannot nest bundles"
 
 -- | Representation of an asynchronous server command.
 --
@@ -183,7 +178,7 @@ maybeSync = do
     case s of
         NeedsSync -> do
             sid <- liftServer $ M.alloc State.syncIdAllocator
-            sendMsg (C.sync (fromIntegral sid))
+            send (C.sync (fromIntegral sid))
             after_ (N.synced sid) (M.free State.syncIdAllocator sid)
         _ -> return ()
 
@@ -218,7 +213,7 @@ whenDone :: MonadIO m => Async m a -> Time -> (a -> SendT m (Deferred b)) -> Sen
 whenDone (Async m) t f = do
     (a, g) <- liftServer m
     (b, s) <- liftServer $ runSendT NeedsSync $ do { b <- f a ; maybeSync ; return b }
-    sendMsg $ g (Just (Bundle t (getOSC s)))
+    send $ g (Just (Bundle t (getOSC s)))
     modify $ \s' -> s' {
         notifications = notifications s' ++ notifications s
       , cleanup = cleanup s' >> cleanup s
@@ -229,7 +224,7 @@ whenDone (Async m) t f = do
 async :: MonadIO m => Async m a -> SendT m (Deferred a)
 async (Async m) = do
     (a, g) <- liftServer m
-    sendMsg (g Nothing)
+    send (g Nothing)
     modify $ setSyncState NeedsSync
     return $ pure a
 

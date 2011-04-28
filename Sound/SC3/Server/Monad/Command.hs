@@ -131,7 +131,7 @@ d_new prefix ugen = mkAsync $ return (sd, f)
 
 -- | Remove definition once all nodes using it have ended.
 d_free :: Monad m => SynthDef -> SendT m ()
-d_free = sendMsg . C.d_free . (:[]) . name
+d_free = send . C.d_free . (:[]) . name
 
 -- -- | Install a bytecode instrument definition.
 -- d_recv :: MonadIO m => Synthdef -> Async m ()
@@ -153,20 +153,20 @@ class Node a where
 
 -- | Place node @a@ after node @b@.
 n_after :: (Node a, Node b, Monad m) => a -> b -> SendT m ()
-n_after a b = sendMsg $ C.n_after [(fromIntegral (nodeId a), fromIntegral (nodeId b))]
+n_after a b = send $ C.n_after [(fromIntegral (nodeId a), fromIntegral (nodeId b))]
 
 -- | Place node @a@ before node @b@.
 n_before :: (Node a, Node b, Monad m) => a -> b -> SendT m ()
-n_before a b = sendMsg $ C.n_after [(fromIntegral (nodeId a), fromIntegral (nodeId b))]
+n_before a b = send $ C.n_after [(fromIntegral (nodeId a), fromIntegral (nodeId b))]
 
 -- | Fill ranges of a node's control values.
 n_fill :: (Node a, Monad m) => a -> [(String, Int, Double)] -> SendT m ()
-n_fill n = sendMsg . C.n_fill (fromIntegral (nodeId n))
+n_fill n = send . C.n_fill (fromIntegral (nodeId n))
 
 -- | Delete a node.
 n_free :: (Node a, MonadIO m) => a -> SendT m ()
 n_free n = do
-    sendMsg $ C.n_free [fromIntegral (nodeId n)]
+    send $ C.n_free [fromIntegral (nodeId n)]
     finally $ M.free M.nodeIdAllocator (nodeId n)
 
 -- | Mapping node controls to buses.
@@ -177,14 +177,14 @@ class BusMapping n b where
     n_unmap :: (Node n, Bus b, Monad m) => n -> String -> b -> SendT m ()
 
 instance BusMapping n ControlBus where
-    n_map n c b = sendMsg msg
+    n_map n c b = send msg
         where
             nid = fromIntegral (nodeId n)
             bid = fromIntegral (busId b)
             msg = if numChannels b > 1
                   then C.n_mapn nid [(c, bid, numChannels b)]
                   else C.n_map  nid [(c, bid)]
-    n_unmap n c b = sendMsg msg
+    n_unmap n c b = send msg
         where
             nid = fromIntegral (nodeId n)
             msg = if numChannels b > 1
@@ -192,14 +192,14 @@ instance BusMapping n ControlBus where
                   else C.n_map  nid [(c, -1)]
 
 instance BusMapping n AudioBus where
-    n_map n c b = sendMsg msg
+    n_map n c b = send msg
         where
             nid = fromIntegral (nodeId n)
             bid = fromIntegral (busId b)
             msg = if numChannels b > 1
                   then C.n_mapan nid [(c, bid, numChannels b)]
                   else C.n_mapa  nid [(c, bid)]
-    n_unmap n c b = sendMsg msg
+    n_unmap n c b = send msg
         where
             nid = fromIntegral (nodeId n)
             msg = if numChannels b > 1
@@ -208,7 +208,7 @@ instance BusMapping n AudioBus where
 
 -- | Query a node.
 n_query_ :: (Node a, Monad m) => a -> SendT m ()
-n_query_ n = sendMsg $ C.n_query [fromIntegral (nodeId n)]
+n_query_ n = send $ C.n_query [fromIntegral (nodeId n)]
 
 -- | Query a node.
 n_query :: (Node a, MonadIO m) => a -> SendT m (Deferred N.NodeNotification)
@@ -216,19 +216,19 @@ n_query n = n_query_ n >> after (N.n_info (nodeId n)) (return ())
 
 -- | Turn node on or off.
 n_run_ :: (Node a, Monad m) => a -> Bool -> SendT m ()
-n_run_ n b = sendMsg $ C.n_run [(fromIntegral (nodeId n), b)]
+n_run_ n b = send $ C.n_run [(fromIntegral (nodeId n), b)]
 
 -- | Set a node's control values.
 n_set :: (Node a, Monad m) => a -> [(String, Double)] -> SendT m ()
-n_set n = sendMsg . C.n_set (fromIntegral (nodeId n))
+n_set n = send . C.n_set (fromIntegral (nodeId n))
 
 -- | Set ranges of a node's control values.
 n_setn :: (Node a, Monad m) => a -> [(String, [Double])] -> SendT m ()
-n_setn n = sendMsg . C.n_setn (fromIntegral (nodeId n))
+n_setn n = send . C.n_setn (fromIntegral (nodeId n))
 
 -- | Trace a node.
 n_trace :: (Node a, Monad m) => a -> SendT m ()
-n_trace n = sendMsg $ C.n_trace [fromIntegral (nodeId n)]
+n_trace n = send $ C.n_trace [fromIntegral (nodeId n)]
 
 -- ====================================================================
 -- Synth
@@ -241,7 +241,7 @@ instance Node Synth where
 s_new :: MonadIO m => SynthDef -> AddAction -> Group -> [(String, Double)] -> SendT m Synth
 s_new d a g xs = do
     nid <- M.alloc M.nodeIdAllocator
-    sendMsg $ C.s_new (name d) (fromIntegral nid) a (fromIntegral (nodeId g)) xs
+    send $ C.s_new (name d) (fromIntegral nid) a (fromIntegral (nodeId g)) xs
     return $ Synth nid
 
 s_new_ :: MonadIO m => SynthDef -> AddAction -> [(String, Double)] -> SendT m Synth
@@ -249,7 +249,7 @@ s_new_ d a xs = rootNode >>= \g -> s_new d a g xs
 
 s_release :: (Node a, MonadIO m) => Double -> a -> SendT m ()
 s_release r n = do
-    sendMsg (C.n_set1 (fromIntegral nid) "gate" r)
+    send (C.n_set1 (fromIntegral nid) "gate" r)
     after_ (N.n_end_ nid) (M.free M.nodeIdAllocator nid)
     where nid = nodeId n
 
@@ -267,26 +267,26 @@ rootNode = liftM Group M.rootNodeId
 g_new :: MonadIO m => AddAction -> Group -> SendT m Group
 g_new a p = do
     nid <- M.alloc State.nodeIdAllocator
-    sendMsg $ C.g_new [(fromIntegral nid, a, fromIntegral (nodeId p))]
+    send $ C.g_new [(fromIntegral nid, a, fromIntegral (nodeId p))]
     return $ Group nid
 
 g_new_ :: MonadIO m => AddAction -> SendT m Group
 g_new_ a = rootNode >>= g_new a
 
 g_deepFree :: Monad m => Group -> SendT m ()
-g_deepFree g = sendMsg $ C.g_deepFree [fromIntegral (nodeId g)]
+g_deepFree g = send $ C.g_deepFree [fromIntegral (nodeId g)]
 
 g_freeAll :: Monad m => Group -> SendT m ()
-g_freeAll g = sendMsg $ C.g_freeAll [fromIntegral (nodeId g)]
+g_freeAll g = send $ C.g_freeAll [fromIntegral (nodeId g)]
 
 g_head :: (Node n, Monad m) => Group -> n -> SendT m ()
-g_head g n = sendMsg $ C.g_head [(fromIntegral (nodeId g), fromIntegral (nodeId n))]
+g_head g n = send $ C.g_head [(fromIntegral (nodeId g), fromIntegral (nodeId n))]
 
 g_tail :: (Node n, Monad m) => Group -> n -> SendT m ()
-g_tail g n = sendMsg $ C.g_tail [(fromIntegral (nodeId g), fromIntegral (nodeId n))]
+g_tail g n = send $ C.g_tail [(fromIntegral (nodeId g), fromIntegral (nodeId n))]
 
 g_dumpTree :: Monad m => [(Group, Bool)] -> SendT m ()
-g_dumpTree = sendMsg . C.g_dumpTree . map (first (fromIntegral . nodeId))
+g_dumpTree = send . C.g_dumpTree . map (first (fromIntegral . nodeId))
 
 -- ====================================================================
 -- Buffer
