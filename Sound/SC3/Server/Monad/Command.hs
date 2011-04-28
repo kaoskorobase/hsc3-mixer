@@ -422,7 +422,7 @@ instance Bus AudioBus where
 
 newtype ControlBus = ControlBus { controlBusId :: Range BusId } deriving (Eq, Show)
 
-newControlBus :: MonadIO m => Int -> ServerT m ControlBus
+newControlBus :: MonadIdAllocator m => Int -> m ControlBus
 newControlBus = liftM ControlBus . M.allocRange M.controlBusIdAllocator
 
 instance Bus ControlBus where
