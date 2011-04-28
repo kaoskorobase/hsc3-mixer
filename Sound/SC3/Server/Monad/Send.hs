@@ -17,18 +17,21 @@
 -- > return $ (,) <$> b0 <*> x
 module Sound.SC3.Server.Monad.Send
   ( SendT
-  , Async
+  , AllocT
+  -- * Deferred values
   , Deferred
+  , after
+  , after_
+  , finally
+  -- * Asynchronous commands
+  , Async
   , module Control.Applicative
   , mkAsync
   , mkAsync_
   , mkAsyncCM
-  , Cleanup
-  , after
-  , after_
-  , finally
   , whenDone
   , async
+  -- * Command execution
   , exec
   , (!>)
   , execPure
@@ -43,7 +46,7 @@ import qualified Control.Monad.Trans.Class as Trans
 import           Control.Monad.Trans.State (StateT(..))
 import qualified Control.Monad.Trans.State as State
 import           Data.IORef
-import           Sound.SC3.Server.Monad (MonadIdAllocator, ServerT)
+import           Sound.SC3.Server.Monad (MonadIdAllocator, MonadSendOSC(..), ServerT)
 import qualified Sound.SC3.Server.Monad as M
 import qualified Sound.SC3.Server.State as State
 import qualified Sound.SC3.Server.Command as C
@@ -60,7 +63,7 @@ data SyncState =
 
 -- | Internal state used for constructing bundles from 'SendT' actions.
 data State m = State {
-    buildOSC      :: [OSC]                  -- ^ Currrent list of OSC messages.
+    buildOSC      :: [OSC]                  -- ^ Current list of OSC messages.
   , notifications :: [Notification (IO ())] -- ^ Current list of notifications to synchronise on.
   , cleanup       :: ServerT m ()           -- ^ Cleanup action to deallocate resources.
   , syncState     :: SyncState              -- ^ Synchronisation barrier state.
@@ -122,21 +125,17 @@ modify = SendT . State.modify
 liftServer :: Monad m => ServerT m a -> SendT m a
 liftServer = SendT . Trans.lift
 
--- | Representation of an asynchronous server command.
---
--- Asynchronous commands are executed asynchronously with respect to other
--- server commands. There are two different ways of synchronising with an
--- asynchronous command: using 'whenDone' for server-side synchronisation or
--- observing the result of a 'SendT' action after calling 'exec'.
-newtype Async m a = Async (ServerT m (a, (Maybe OSC -> OSC)))
+-- | Allocation action newtype wrapper.
+newtype AllocT m a = AllocT (ServerT m a)
+                     deriving (Applicative, MonadIdAllocator, Functor, Monad)
 
 -- | Representation of a deferred server resource.
 --
 -- Deferred resource values can only be observed a return value of the 'SendT'
 -- action after 'exec' has been called.
 --
--- Deferred is has 'Applicative' and 'Functor' instances, so that complex
--- values can be built from simple ones.
+-- Deferred has 'Applicative' and 'Functor' instances, so that complex values
+-- can be built from simple ones.
 newtype Deferred a = Deferred (IO a)
 
 -- | Construct a deferred value from an IO action.
@@ -150,12 +149,43 @@ instance Applicative Deferred where
     pure = Deferred . pure
     (<*>) (Deferred f) (Deferred a) = Deferred (f <*> a)
 
--- | Create an asynchronous command.
+-- | Register a cleanup action, to be executed after a notification has been
+-- received and return the deferred notification result.
+after :: MonadIO m => Notification a -> AllocT m () -> SendT m (Deferred a)
+after n (AllocT m) = do
+    v <- liftServer $ liftIO $ newIORef (error "BUG: after: uninitialized IORef")
+    modify $ \s -> s { notifications = fmap (writeIORef v) n : notifications s
+                     , cleanup = cleanup s >> m }
+    return $ deferredIO (readIORef v)
+
+-- | Register a cleanup action, to be executed after a notification has been
+-- received and ignore the notification result.
+after_ :: Monad m => Notification a -> AllocT m () -> SendT m ()
+after_ n (AllocT m) = modify $ \s -> s { notifications = fmap (const (return ())) n : notifications s
+                                       , cleanup = cleanup s >> m }
+
+-- | Register a cleanup action, to be executed after all asynchronous commands
+-- and notification have finished.
+finally :: Monad m => AllocT m () -> SendT m ()
+finally (AllocT m) = modify $ \s -> s { cleanup = cleanup s >> m }
+
+-- | Representation of an asynchronous server command. Asynchronous commands
+-- are executed asynchronously with respect to other server commands.
+--
+-- There are two different ways of synchronising with an asynchronous command:
+--
+-- * using 'whenDone' for server-side synchronisation, or
+--
+-- * using 'async' and observing the result of a 'SendT' action after calling
+-- 'exec'.
+newtype Async m a = Async (AllocT m (a, (Maybe OSC -> OSC)))
+
+-- | Create an asynchronous command from an allocation action.
 --
 -- The first return value should be a server resource allocated on the client,
 -- the second a function that, given a completion packet, returns an OSC packet
 -- that asynchronously allocates the resource on the server.
-mkAsync :: ServerT m (a, (Maybe OSC -> OSC)) -> Async m a
+mkAsync :: AllocT m (a, (Maybe OSC -> OSC)) -> Async m a
 mkAsync = Async
 
 -- | Create an asynchronous command from a side effecting OSC function.
@@ -165,7 +195,7 @@ mkAsync_ f = mkAsync $ return ((), f)
 -- | Create an asynchronous command.
 --
 -- The completion message will be appended at the end of the returned message.
-mkAsyncCM :: Monad m => ServerT m (a, OSC) -> Async m a
+mkAsyncCM :: Monad m => AllocT m (a, OSC) -> Async m a
 mkAsyncCM = mkAsync . liftM (second f)
     where
         f msg Nothing   = msg
@@ -182,35 +212,11 @@ maybeSync = do
             after_ (N.synced sid) (M.free State.syncIdAllocator sid)
         _ -> return ()
 
--- | Cleanup action newtype wrapper.
-newtype Cleanup m a = Cleanup (ServerT m a)
-                      deriving (Applicative, MonadIdAllocator, Functor, Monad)
-
--- | Register a cleanup action, to be executed after a notification has been
--- received and return the deferred notification result.
-after :: MonadIO m => Notification a -> Cleanup m () -> SendT m (Deferred a)
-after n (Cleanup m) = do
-    v <- liftServer $ liftIO $ newIORef (error "BUG: after: uninitialized IORef")
-    modify $ \s -> s { notifications = fmap (writeIORef v) n : notifications s
-                     , cleanup = cleanup s >> m }
-    return $ deferredIO (readIORef v)
-
--- | Register a cleanup action, to be executed after a notification has been
--- received and ignore the notification result.
-after_ :: Monad m => Notification a -> Cleanup m () -> SendT m ()
-after_ n (Cleanup m) = modify $ \s -> s { notifications = fmap (const (return ())) n : notifications s
-                                        , cleanup = cleanup s >> m }
-
--- | Register a cleanup action, to be executed after all asynchronous commands
--- and notification have finished.
-finally :: Monad m => Cleanup m () -> SendT m ()
-finally (Cleanup m) = modify $ \s -> s { cleanup = cleanup s >> m }
-
--- | Execute an server-side action after the asynchronous command has finished.
---
--- The corresponding server commands are scheduled at a time @t@ in the future.
+-- | Execute an server-side action after the asynchronous command has
+-- finished. The corresponding server commands are scheduled at a time @t@ in
+-- the future.
 whenDone :: MonadIO m => Async m a -> Time -> (a -> SendT m (Deferred b)) -> SendT m (Deferred b)
-whenDone (Async m) t f = do
+whenDone (Async (AllocT m)) t f = do
     (a, g) <- liftServer m
     (b, s) <- liftServer $ runSendT NeedsSync $ do { b <- f a ; maybeSync ; return b }
     send $ g (Just (Bundle t (getOSC s)))
@@ -222,7 +228,7 @@ whenDone (Async m) t f = do
 
 -- | Execute an asynchronous command asynchronously.
 async :: MonadIO m => Async m a -> SendT m (Deferred a)
-async (Async m) = do
+async (Async (AllocT m)) = do
     (a, g) <- liftServer m
     send (g Nothing)
     modify $ setSyncState NeedsSync
