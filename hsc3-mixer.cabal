@@ -30,6 +30,7 @@ Executable hsc3-mixer
     Build-Depends:
         base >= 4 && < 5
       , bytestring
+      , bzlib
       , containers
       , hosc >= 0.10
       , hsc3 >= 0.10
@@ -46,6 +47,7 @@ Executable hsc3-example
     Build-Depends:
         base >= 4 && < 5
       , bytestring
+      , bzlib
       , containers
       , hosc >= 0.10
       , hsc3 >= 0.10

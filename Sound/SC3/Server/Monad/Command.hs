@@ -71,11 +71,12 @@ module Sound.SC3.Server.Monad.Command
   , module Sound.SC3.Server.Monad.Send
   ) where
 
+import qualified Codec.Compression.BZip as BZip
 import qualified Codec.Digest.SHA as SHA
 import           Control.Arrow (first)
 import           Control.Monad (liftM)
 import           Control.Monad.IO.Class (MonadIO)
-import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as B
 import           Sound.SC3 (Rate(..), UGen)
 import qualified Sound.SC3.Server.Allocator.Range as Range
 import           Sound.SC3.Server.Monad hiding (sync, unsafeSync)
@@ -119,14 +120,16 @@ d_named = SynthDef
 d_default :: SynthDef
 d_default = d_named "default"
 
-graphName = SHA.showBSasHex . SHA.hash SHA.SHA256 . B.pack . show . Synthdef.synth
+-- | Compute a unique name for a UGen graph.
+graphName :: UGen -> String
+graphName = SHA.showBSasHex . SHA.hash SHA.SHA256 . BZip.compress . Synthdef.graphdef . Synthdef.synth
 
 d_new :: Monad m => String -> UGen -> Async m SynthDef
-d_new prefix ugen = mkAsync $ return (sd, f)
+d_new prefix ugen
+    | length prefix < 127 = mkAsync $ return (sd, f)
+    | otherwise = error "d_new: name prefix too long, resulting string exceeds 255 characters"
     where
-        -- FIXME: Synthdef names can only be 31 bytes long!
-        -- sd = SynthDef (prefix ++ "-" ++ graphName ugen)
-        sd = SynthDef prefix
+        sd = SynthDef (prefix ++ "-" ++ graphName ugen)
         f osc = (mkC C.d_recv C.d_recv' osc) (Synthdef.synthdef (name sd) ugen)
 
 -- | Remove definition once all nodes using it have ended.
