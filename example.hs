@@ -60,17 +60,22 @@ mainIO = do
         let t' = t + 5
         (b0, (g, ig, b)) <- OSC.UTCr t' !> do
             b0 <- async $ b_alloc 1024 1
-            x <- b_alloc 1024 1 `whenDone` \b -> do
+            x <- b_alloc 2048 2 `whenDone` \b -> do
                 b_free b `whenDone` \_ -> do
                     g <- g_new_ AddToTail
                     ig <- g_new AddToTail g
                     return $ pure (g, ig, b)
+            b_alloc 4096 3 `whenDone` \_ -> do
+                g <- rootNode
+                s_new (d_named "default") AddToTail g []
+                return $ pure ()
             return $ (,) <$> b0 <*> x
         immediately !> n_query g >>= liftIO . print
         b_query b >>= liftIO . print
         b_query b0 >>= liftIO . print
         status >>= liftIO . print
         waitFor (C.g_queryTree [(0, True)]) (hasAddress "/g_queryTree.reply") >>= liftIO . print
+        liftIO $ OSC.pauseThread 5
         -- ioLoop =<< liftIO utcr
  
 main :: IO ()
