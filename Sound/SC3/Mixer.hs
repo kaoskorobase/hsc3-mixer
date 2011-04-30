@@ -35,7 +35,7 @@ mkRedirect g _ = liftM Redirect (g_new AddToTail g)
 mkFader :: MonadIO m => Group -> AudioBus -> SendT m (Deferred Fader)
 mkFader parent bus = do
     g <- g_new AddToTail parent
-    d_new "fader" (faderDef (numChannels bus)) `whenDone` immediately $ \d -> do
+    d_new "fader" (faderDef (numChannels bus)) `whenDone` \d -> do
         s <- s_new d AddToTail g [ ("bus", fromIntegral (busId bus)) ]
         return $ pure $ Fader g s
 

@@ -58,10 +58,10 @@ mainIO = do
         -- send immediately sync
         t <- liftIO $ OSC.utcr
         let t' = t + 5
-        (b0, (g, ig, b)) <- immediately !> do
+        (b0, (g, ig, b)) <- OSC.UTCr t' !> do
             b0 <- async $ b_alloc 1024 1
-            x <- b_alloc 1024 1 `whenDone` immediately $ \b -> do
-                b_free b `whenDone` OSC.UTCr t' $ \() -> do
+            x <- b_alloc 1024 1 `whenDone` \b -> do
+                b_free b `whenDone` \_ -> do
                     g <- g_new_ AddToTail
                     ig <- g_new AddToTail g
                     return $ pure (g, ig, b)
@@ -74,4 +74,4 @@ mainIO = do
         -- ioLoop =<< liftIO utcr
  
 main :: IO ()
-main = mainR
+main = mainIO

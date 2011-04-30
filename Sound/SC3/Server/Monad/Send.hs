@@ -55,7 +55,7 @@ import qualified Sound.SC3.Server.State as State
 import qualified Sound.SC3.Server.Command as C
 import           Sound.SC3.Server.Notification (Notification)
 import qualified Sound.SC3.Server.Notification as N
-import           Sound.OpenSoundControl (OSC(..), Time)
+import           Sound.OpenSoundControl (OSC(..), Time, immediately)
 
 -- | Synchronisation state.
 data SyncState =
@@ -69,11 +69,12 @@ data State m = State {
     buildOSC      :: [OSC]                  -- ^ Current list of OSC messages.
   , notifications :: [Notification (IO ())] -- ^ Current list of notifications to synchronise on.
   , cleanup       :: ServerT m ()           -- ^ Cleanup action to deallocate resources.
+  , timeTag       :: Time                   -- ^ Time tag.
   , syncState     :: SyncState              -- ^ Synchronisation barrier state.
   }
 
 -- | Construct a 'SendT' state with a given synchronisation state.
-mkState :: Monad m => SyncState -> State m
+mkState :: Monad m => Time -> SyncState -> State m
 mkState = State [] [] (return ())
 
 -- | Push an OSC packet.
@@ -115,8 +116,8 @@ instance Monad m => MonadSendOSC (SendT m) where
     send (Bundle _ xs)     = mapM_ send xs
 
 -- | Execute a SendT action, returning the result and the final state.
-runSendT :: Monad m => SyncState -> SendT m a -> ServerT m (a, State m)
-runSendT s (SendT m) = State.runStateT m (mkState s)
+runSendT :: Monad m => Time -> SyncState -> SendT m a -> ServerT m (a, State m)
+runSendT t s (SendT m) = State.runStateT m (mkState t s)
 
 -- | Get a value from the state.
 gets :: Monad m => (State m -> a) -> SendT m a
@@ -224,11 +225,15 @@ maybeSync = do
 -- | Execute an server-side action after the asynchronous command has
 -- finished. The corresponding server commands are scheduled at a time @t@ in
 -- the future.
-whenDone :: MonadIO m => Async m a -> Time -> (a -> SendT m (Deferred b)) -> SendT m (Deferred b)
-whenDone (Async (AllocT m)) t f = do
+whenDone :: MonadIO m => Async m a -> (a -> SendT m (Deferred b)) -> SendT m (Deferred b)
+whenDone (Async (AllocT m)) f = do
+    t <- gets timeTag
     (a, g) <- liftServer m
-    (b, s) <- liftServer $ runSendT NeedsSync $ do { b <- f a ; maybeSync ; return b }
-    send $ g (Just (Bundle t (getOSC s)))
+    (b, s) <- liftServer $ runSendT t NeedsSync $ do { b <- f a ; maybeSync ; return b }
+    let t' = case syncState s of
+                HasSync -> immediately
+                _       -> t
+    send $ g (Just (Bundle t' (getOSC s)))
     modify $ \s' -> s' {
         notifications = notifications s' ++ notifications s
       , cleanup = cleanup s' >> cleanup s
@@ -249,10 +254,15 @@ async (Async (AllocT m)) = do
 -- when this function returns.
 exec :: MonadIO m => Time -> SendT m (Deferred a) -> ServerT m a
 exec t m = do
-    (Deferred a, s) <- runSendT NoSync $ do { a <- m ; maybeSync ; return a }
+    (Deferred a, s) <- runSendT t NoSync $ do { a <- m ; maybeSync ; return a }
     case getOSC s of
         [] -> return ()
-        osc -> M.waitForAll (Bundle t osc) (notifications s) >>= liftIO . sequence_
+        osc -> do
+            liftIO $ print osc
+            let t' = case syncState s of
+                        HasSync -> immediately
+                        _ -> t
+            M.waitForAll (Bundle t' osc) (notifications s) >>= liftIO . sequence_
     cleanup s
     liftIO a
 
