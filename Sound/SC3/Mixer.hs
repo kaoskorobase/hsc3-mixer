@@ -44,7 +44,7 @@ data OutputBus = Hardware Int Int | Private Int deriving (Eq, Show)
 mkStrip :: MonadIO m => OutputBus -> SendT m (Deferred Strip)
 mkStrip o = do
     b <- case o of
-            Hardware n i -> newHardwareBus n i
+            Hardware n i -> outputBus n i
             Private n    -> newAudioBus n
     g <- g_new_ AddToTail
     ig <- g_new AddToTail g

@@ -1,4 +1,5 @@
-{-# LANGUAGE FlexibleInstances
+{-# LANGUAGE FlexibleContexts
+           , FlexibleInstances
            , GeneralizedNewtypeDeriving
            , MultiParamTypeClasses #-}
 module Sound.SC3.Server.Monad.Command
@@ -61,7 +62,8 @@ module Sound.SC3.Server.Monad.Command
   , busId
   , numChannels
   , AudioBus(..)
-  , newHardwareBus
+  , inputBus
+  , outputBus
   , newAudioBus
   , ControlBus(..)
   , newControlBus
@@ -74,6 +76,7 @@ module Sound.SC3.Server.Monad.Command
 import qualified Codec.Compression.BZip as BZip
 import qualified Codec.Digest.SHA as SHA
 import           Control.Arrow (first)
+import           Control.Failure (Failure, failure)
 import           Control.Monad (liftM)
 import           Control.Monad.IO.Class (MonadIO)
 import qualified Data.ByteString.Lazy.Char8 as B
@@ -84,10 +87,12 @@ import qualified Sound.SC3.Server.Monad as M
 import           Sound.SC3.Server.Monad.Send
 import qualified Sound.SC3.Server.State as State
 import qualified Sound.SC3.Server.Synthdef as Synthdef
+import           Sound.SC3.Server.Allocator (AllocFailure(..))
 import           Sound.SC3.Server.Command (AddAction(..), PrintLevel(..))
 import qualified Sound.SC3.Server.Command as C
 import qualified Sound.SC3.Server.Command.Completion as C
 import qualified Sound.SC3.Server.Notification as N
+import           Sound.SC3.Server.Options (ServerOptions(..))
 import           Sound.OpenSoundControl (OSC(..))
 
 -- ====================================================================
@@ -397,36 +402,59 @@ b_query (Buffer bid) = C.b_query [fromIntegral bid] `M.waitFor` N.b_info bid
 -- ====================================================================
 -- Bus
 
+-- | Abstract interface for control and audio rate buses.
 class Bus a where
     rate :: a -> Rate
     busIdRange :: a -> Range BusId
     freeBus :: MonadIdAllocator m => a -> m ()
 
+-- | Bus id.
 busId :: Bus a => a -> BusId
 busId = Range.begin . busIdRange
 
+-- | Number of channels of the bus.
 numChannels :: Bus a => a -> Int
 numChannels = Range.size . busIdRange
 
+-- | Audio bus.
 newtype AudioBus = AudioBus { audioBusId :: Range BusId } deriving (Eq, Show)
-
-newHardwareBus :: MonadIdAllocator m => Int -> Int -> m AudioBus
-newHardwareBus n = return . AudioBus . Range.sized (fromIntegral n) . fromIntegral
-
-newAudioBus :: MonadIdAllocator m => Int -> m AudioBus
-newAudioBus = liftM AudioBus . M.allocRange M.audioBusIdAllocator
 
 instance Bus AudioBus where
     rate _ = AR
     busIdRange = audioBusId
     freeBus = M.freeRange M.audioBusIdAllocator . audioBusId
 
-newtype ControlBus = ControlBus { controlBusId :: Range BusId } deriving (Eq, Show)
+-- | Get hardware input bus.
+inputBus :: (MonadServer m, Failure AllocFailure m) => Int -> Int -> m AudioBus
+inputBus n i = do
+    k <- serverOption numberOfOutputBusChannels
+    m <- serverOption numberOfInputBusChannels
+    let r = Range.sized n (fromIntegral (k+i))
+    if Range.begin r < fromIntegral k || Range.end r >= fromIntegral (k+m)
+        then failure InvalidId
+        else return (AudioBus r)
 
-newControlBus :: MonadIO m => Int -> ServerT m ControlBus
-newControlBus = liftM ControlBus . M.allocRange M.controlBusIdAllocator
+-- | Get hardware output bus.
+outputBus :: (MonadServer m, Failure AllocFailure m) => Int -> Int -> m AudioBus
+outputBus n i = do
+    k <- serverOption numberOfOutputBusChannels
+    let r = Range.sized n (fromIntegral i)
+    if Range.begin r < 0 || Range.end r >= fromIntegral k
+        then failure InvalidId
+        else return (AudioBus r)
+
+-- | Allocate audio bus with the specified number of channels.
+newAudioBus :: MonadIdAllocator m => Int -> m AudioBus
+newAudioBus = liftM AudioBus . M.allocRange M.audioBusIdAllocator
+
+-- | Control bus.
+newtype ControlBus = ControlBus { controlBusId :: Range BusId } deriving (Eq, Show)
 
 instance Bus ControlBus where
     rate _ = KR
     busIdRange = controlBusId
     freeBus = M.freeRange M.controlBusIdAllocator . controlBusId
+
+-- | Allocate control bus with the specified number of channels.
+newControlBus :: MonadIO m => Int -> ServerT m ControlBus
+newControlBus = liftM ControlBus . M.allocRange M.controlBusIdAllocator

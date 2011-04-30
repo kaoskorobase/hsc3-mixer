@@ -32,9 +32,11 @@ Executable hsc3-mixer
       , bytestring
       , bzlib
       , containers
+      , failure
       , hosc >= 0.10
       , hsc3 >= 0.10
-      , hsc3-server
+      , hsc3-process >= 0.6
+      , hsc3-server >= 0.3
       , random
       , reactive-banana
       , SHA2
@@ -49,9 +51,11 @@ Executable hsc3-example
       , bytestring
       , bzlib
       , containers
+      , failure
       , hosc >= 0.10
       , hsc3 >= 0.10
-      , hsc3-server
+      , hsc3-process >= 0.6
+      , hsc3-server >= 0.3
       , random
       , reactive-banana
       , SHA2
