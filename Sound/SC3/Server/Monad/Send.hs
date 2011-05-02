@@ -43,7 +43,7 @@ module Sound.SC3.Server.Monad.Send
 import           Control.Applicative
 import           Control.Arrow (second)
 import           Control.Failure (Failure(..))
-import           Control.Monad (ap, liftM)
+import           Control.Monad (ap, liftM, when)
 import           Control.Monad.IO.Class (MonadIO(..))
 import qualified Control.Monad.Trans.Class as Trans
 import           Control.Monad.Trans.State (StateT(..))
@@ -81,6 +81,10 @@ mkState = State [] [] (return ())
 -- | Push an OSC packet.
 pushOSC :: OSC -> State m -> State m
 pushOSC osc s = s { buildOSC = osc : buildOSC s }
+
+-- | Return 'True' if the current context contains OSC messages.
+hasOSC :: State m -> Bool
+hasOSC = not . null . buildOSC
 
 -- | Get the list of OSC packets.
 getOSC :: State m -> [OSC]
@@ -216,13 +220,15 @@ mkAsyncCM = mkAsync . liftM (second f)
 addSync :: MonadIO m => SendT m a -> SendT m a
 addSync m = do
     a <- m
-    s <- gets syncState
-    case s of
-        NeedsSync -> do
-            sid <- liftServer $ M.alloc State.syncIdAllocator
-            send (C.sync (fromIntegral sid))
-            after_ (N.synced sid) (M.free State.syncIdAllocator sid)
-        _ -> return ()
+    b <- gets hasOSC
+    when True $ do
+        s <- gets syncState
+        case s of
+            NeedsSync -> do
+                sid <- liftServer $ M.alloc State.syncIdAllocator
+                send (C.sync (fromIntegral sid))
+                after_ (N.synced sid) (M.free State.syncIdAllocator sid)
+            _ -> return ()
     return a
 
 -- | Execute an server-side action after the asynchronous command has
