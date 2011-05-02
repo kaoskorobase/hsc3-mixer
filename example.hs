@@ -55,8 +55,6 @@ mainIO = do
     withDefaultInternal $ do
     -- withDefaultSynth $ do
         immediately ~> dumpOSC TextPrinter
-        -- mkStrip >>= liftIO . print
-        -- send immediately sync
         t <- liftIO $ OSC.utcr
         let t' = t + 5
         (b0, (g, ig, b)) <- OSC.UTCr t' !> do
