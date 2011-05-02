@@ -54,7 +54,7 @@ ioLoop t = do
 mainIO = do
     withDefaultInternal $ do
     -- withDefaultSynth $ do
-        dumpOSC TextPrinter
+        immediately ~> dumpOSC TextPrinter
         -- mkStrip >>= liftIO . print
         -- send immediately sync
         t <- liftIO $ OSC.utcr
@@ -70,10 +70,13 @@ mainIO = do
                 g <- rootNode
                 s_new (d_named "default") AddToTail g []
             return $ (,) <$> b0 <*> x
-        immediately !> n_query g >>= liftIO . print
-        b_query b >>= liftIO . print
-        b_query b0 >>= liftIO . print
-        status >>= liftIO . print
+        info <- immediately !> do
+            ig <- n_query g
+            ib <- b_query b
+            ib0 <- b_query b0
+            return $ pure (,,) <*> ig <*> ib <*> ib0
+        liftIO $ print info
+        immediately !> status >>= liftIO . print
         waitFor (C.g_queryTree [(0, True)]) (hasAddress "/g_queryTree.reply") >>= liftIO . print
         liftIO $ OSC.pauseThread 5
         -- ioLoop =<< liftIO utcr

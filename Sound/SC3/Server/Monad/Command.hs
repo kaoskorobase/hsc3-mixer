@@ -1,4 +1,5 @@
-{-# LANGUAGE FlexibleContexts
+{-# LANGUAGE ExistentialQuantification
+           , FlexibleContexts
            , FlexibleInstances
            , GeneralizedNewtypeDeriving
            , MultiParamTypeClasses #-}
@@ -32,6 +33,7 @@ module Sound.SC3.Server.Monad.Command
   , n_set
   , n_setn
   , n_trace
+  , n_order
   -- *** Synths
   , Synth(..)
   , s_new
@@ -105,11 +107,11 @@ mkC _ f (Just osc) = f osc
 -- ====================================================================
 -- Master controls
 
-status :: MonadIO m => ServerT m N.Status
-status = M.waitFor C.status N.status_reply
+status :: MonadIO m => SendT m (Deferred m N.Status)
+status = send C.status >> after N.status_reply (return ())
 
-dumpOSC :: MonadIO m => PrintLevel -> ServerT m ()
-dumpOSC p = M.sync (C.dumpOSC p)
+dumpOSC :: Monad m => PrintLevel -> SendT m ()
+dumpOSC = send . C.dumpOSC
 
 -- ====================================================================
 -- Synth definitions
@@ -128,6 +130,7 @@ d_default = d_named "default"
 graphName :: UGen -> String
 graphName = SHA.showBSasHex . SHA.hash SHA.SHA256 . BZip.compress . Synthdef.graphdef . Synthdef.synth
 
+-- | Create a new synth definition.
 d_new :: Monad m => String -> UGen -> Async m SynthDef
 d_new prefix ugen
     | length prefix < 127 = mkAsync $ return (sd, f)
@@ -140,23 +143,25 @@ d_new prefix ugen
 d_free :: Monad m => SynthDef -> SendT m ()
 d_free = send . C.d_free . (:[]) . name
 
--- -- | Install a bytecode instrument definition.
--- d_recv :: MonadIO m => Synthdef -> Async m ()
--- d_recv = mkAsync_ . C.d_recv
--- 
--- -- | Load an instrument definition from a named file.
--- d_load :: MonadIO m => FilePath -> Async m ()
--- d_load = mkAsync_ . C.d_load
--- 
--- -- | Load a directory of instrument definitions files.
--- d_loadDir :: MonadIO m => FilePath -> Async m ()
--- d_loadDir = mkAsync_ . C.d_loadDir
-
 -- ====================================================================
 -- Node
 
 class Node a where
     nodeId :: a -> NodeId
+
+data AbstractNode = forall n . (Eq n, Node n, Show n) => AbstractNode n
+
+instance Eq AbstractNode where
+    (AbstractNode a) == (AbstractNode b) = nodeId a == nodeId b
+
+instance Node AbstractNode where
+    nodeId (AbstractNode n) = nodeId n
+
+instance Show AbstractNode where
+    show (AbstractNode n) = show n
+
+n_wrap :: (Eq n, Node n, Show n) => n -> AbstractNode
+n_wrap = AbstractNode
 
 -- | Place node @a@ after node @b@.
 n_after :: (Node a, Node b, Monad m) => a -> b -> SendT m ()
@@ -236,6 +241,10 @@ n_setn n = send . C.n_setn (fromIntegral (nodeId n))
 -- | Trace a node.
 n_trace :: (Node a, Monad m) => a -> SendT m ()
 n_trace n = send $ C.n_trace [fromIntegral (nodeId n)]
+
+-- | Move an ordered sequence of nodes.
+n_order :: (Node n, Monad m) => AddAction -> n -> [AbstractNode] -> SendT m ()
+n_order a n = send . C.n_order a (fromIntegral (nodeId n)) . map (fromIntegral.nodeId)
 
 -- ====================================================================
 -- Synth
@@ -395,8 +404,10 @@ b_zero (Buffer bid) = mkAsync_ f
     where
         f osc = (mkC C.b_zero C.b_zero' osc) (fromIntegral bid)
 
-b_query :: MonadIO m => Buffer -> ServerT m N.BufferInfo
-b_query (Buffer bid) = C.b_query [fromIntegral bid] `M.waitFor` N.b_info bid
+b_query :: MonadIO m => Buffer -> SendT m (Deferred m N.BufferInfo)
+b_query (Buffer bid) = do
+    send (C.b_query [fromIntegral bid])
+    after (N.b_info bid) (return ())
 
 -- ====================================================================
 -- Bus
@@ -423,6 +434,10 @@ instance Bus AudioBus where
     busIdRange = audioBusId
     freeBus = M.freeRange M.audioBusIdAllocator . audioBusId
 
+-- | Allocate audio bus with the specified number of channels.
+newAudioBus :: MonadIdAllocator m => Int -> m AudioBus
+newAudioBus = liftM AudioBus . M.allocRange M.audioBusIdAllocator
+
 -- | Get hardware input bus.
 inputBus :: (MonadServer m, Failure AllocFailure m) => Int -> Int -> m AudioBus
 inputBus n i = do
@@ -441,10 +456,6 @@ outputBus n i = do
     if Range.begin r < 0 || Range.end r >= fromIntegral k
         then failure InvalidId
         else return (AudioBus r)
-
--- | Allocate audio bus with the specified number of channels.
-newAudioBus :: MonadIdAllocator m => Int -> m AudioBus
-newAudioBus = liftM AudioBus . M.allocRange M.audioBusIdAllocator
 
 -- | Control bus.
 newtype ControlBus = ControlBus { controlBusId :: Range BusId } deriving (Eq, Show)

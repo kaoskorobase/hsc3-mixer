@@ -80,7 +80,11 @@ data StripInput m = StripInput {
 
 strip :: Int -> StripInput IO -> ServerT IO (Behavior Strip)
 strip n i = do
-    s0 <- immediately !> mkStrip (Hardware n 0)
+    s0 <- immediately !> mkStrip n
+    o <- outputBus 2 0
+    immediately !> do
+        async $ connect (InputStrip s0, 0) (OutputNode o, 0)
+        async $ connect (InputStrip s0, 1) (OutputNode o, 1)
     accumulate f s0 (changes ((,) <$> level i <*> mute i) `merge` event i)
     where
         f e s = do
@@ -104,5 +108,5 @@ main = do
           }
         b <- strip 2 i
         liftIO $ reactimate $ fmap (const (return ())) $ changes b
-        -- liftIO $ reactimate $ fmap print $ changes $ mute i
+        -- liftIO $ reactimate $ fmap print $ changes $ level i
         liftIO srv

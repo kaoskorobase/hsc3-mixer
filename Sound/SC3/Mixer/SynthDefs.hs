@@ -16,3 +16,9 @@ faderDef n = mkInsertEffect n $ \i ->
     let level = control KR "level" 1
         mute = control KR "mute" 0
     in i * level * (1 - mute)
+
+patchCord :: UGen
+patchCord =
+    let inbus = control KR "in" 0
+        outbus = control KR "out" 0
+    in out outbus (in' 1 AR inbus)
