@@ -110,8 +110,12 @@ mkC _ f (Just osc) = f osc
 status :: MonadIO m => SendT m (Deferred m N.Status)
 status = send C.status >> after N.status_reply (return ())
 
-dumpOSC :: Monad m => PrintLevel -> SendT m ()
-dumpOSC = send . C.dumpOSC
+dumpOSC :: MonadIO m => PrintLevel -> SendT m ()
+dumpOSC p = do
+    i <- M.alloc M.syncIdAllocator
+    send (C.dumpOSC p)
+    send (C.sync (fromIntegral i))
+    after_ (N.synced i) (return ())
 
 -- ====================================================================
 -- Synth definitions
