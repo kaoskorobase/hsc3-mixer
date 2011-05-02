@@ -1,4 +1,5 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving
+           , MultiParamTypeClasses #-}
 
 -- | This module provides abstractions for constructing bundles for server
 -- resource allocation in a type safe manner. In particular, the exposed types
@@ -30,6 +31,7 @@ module Sound.SC3.Server.Monad.Send
   , mkAsync_
   , mkAsyncCM
   , whenDone
+  , asyncM
   , async
   -- * Command execution
   , exec
@@ -40,19 +42,21 @@ module Sound.SC3.Server.Monad.Send
 
 import           Control.Applicative
 import           Control.Arrow (second)
-import           Control.Monad (liftM)
+import           Control.Failure (Failure(..))
+import           Control.Monad (ap, liftM)
 import           Control.Monad.IO.Class (MonadIO(..))
 import qualified Control.Monad.Trans.Class as Trans
 import           Control.Monad.Trans.State (StateT(..))
 import qualified Control.Monad.Trans.State as State
 import           Data.IORef
-import           Sound.SC3.Server.Monad (MonadIdAllocator, MonadSendOSC(..), ServerT)
+import           Sound.SC3.Server.Allocator (AllocFailure)
+import           Sound.SC3.Server.Monad (MonadIdAllocator, MonadSendOSC(..), MonadServer, ServerT)
 import qualified Sound.SC3.Server.Monad as M
 import qualified Sound.SC3.Server.State as State
 import qualified Sound.SC3.Server.Command as C
 import           Sound.SC3.Server.Notification (Notification)
 import qualified Sound.SC3.Server.Notification as N
-import           Sound.OpenSoundControl (OSC(..), Time)
+import           Sound.OpenSoundControl (OSC(..), Time, immediately)
 
 -- | Synchronisation state.
 data SyncState =
@@ -63,14 +67,15 @@ data SyncState =
 
 -- | Internal state used for constructing bundles from 'SendT' actions.
 data State m = State {
-    buildOSC      :: [OSC]                  -- ^ Current list of OSC messages.
-  , notifications :: [Notification (IO ())] -- ^ Current list of notifications to synchronise on.
-  , cleanup       :: ServerT m ()           -- ^ Cleanup action to deallocate resources.
-  , syncState     :: SyncState              -- ^ Synchronisation barrier state.
+    buildOSC      :: [OSC]                         -- ^ Current list of OSC messages.
+  , notifications :: [Notification (ServerT m ())] -- ^ Current list of notifications to synchronise on.
+  , cleanup       :: ServerT m ()                  -- ^ Cleanup action to deallocate resources.
+  , timeTag       :: Time                          -- ^ Time tag.
+  , syncState     :: SyncState                     -- ^ Synchronisation barrier state.
   }
 
 -- | Construct a 'SendT' state with a given synchronisation state.
-mkState :: Monad m => SyncState -> State m
+mkState :: Monad m => Time -> SyncState -> State m
 mkState = State [] [] (return ())
 
 -- | Push an OSC packet.
@@ -90,6 +95,12 @@ setSyncState ss s | ss > syncState s = s { syncState = ss }
 newtype SendT m a = SendT (StateT (State m) (ServerT m) a)
                     deriving (Applicative, Functor, Monad)
 
+instance MonadIO m => MonadServer (SendT m) where
+    serverOptions = liftServer M.serverOptions
+
+instance MonadIO m => Failure AllocFailure (SendT m) where
+    failure = liftServer . failure
+
 instance MonadIO m => MonadIdAllocator (SendT m) where
     rootNodeId = liftServer M.rootNodeId
     alloc = liftServer . M.alloc
@@ -106,8 +117,8 @@ instance Monad m => MonadSendOSC (SendT m) where
     send (Bundle _ xs)     = mapM_ send xs
 
 -- | Execute a SendT action, returning the result and the final state.
-runSendT :: Monad m => SyncState -> SendT m a -> ServerT m (a, State m)
-runSendT s (SendT m) = State.runStateT m (mkState s)
+runSendT :: Monad m => Time -> SyncState -> SendT m a -> ServerT m (a, State m)
+runSendT t s (SendT m) = State.runStateT m (mkState t s)
 
 -- | Get a value from the state.
 gets :: Monad m => (State m -> a) -> SendT m a
@@ -127,7 +138,7 @@ liftServer = SendT . Trans.lift
 
 -- | Allocation action newtype wrapper.
 newtype AllocT m a = AllocT (ServerT m a)
-                     deriving (Applicative, MonadIdAllocator, Functor, Monad)
+                     deriving (Applicative, Failure AllocFailure, MonadIdAllocator, Functor, Monad)
 
 -- | Representation of a deferred server resource.
 --
@@ -136,25 +147,25 @@ newtype AllocT m a = AllocT (ServerT m a)
 --
 -- Deferred has 'Applicative' and 'Functor' instances, so that complex values
 -- can be built from simple ones.
-newtype Deferred a = Deferred (IO a)
+newtype Deferred m a = Deferred { unDefer :: ServerT m a } deriving (Monad)
+
+instance Monad m => Functor (Deferred m) where
+    fmap f (Deferred a) = Deferred (liftM f a)
+
+instance Monad m => Applicative (Deferred m) where
+    pure = Deferred . return
+    (<*>) (Deferred f) (Deferred a) = Deferred (f `ap` a)
 
 -- | Construct a deferred value from an IO action.
-deferredIO :: IO a -> Deferred a
-deferredIO = Deferred
-
-instance Functor Deferred where
-    fmap f (Deferred a) = Deferred (f `fmap` a)
-
-instance Applicative Deferred where
-    pure = Deferred . pure
-    (<*>) (Deferred f) (Deferred a) = Deferred (f <*> a)
+deferredIO :: MonadIO m => IO a -> Deferred m a
+deferredIO = Deferred . liftIO
 
 -- | Register a cleanup action, to be executed after a notification has been
 -- received and return the deferred notification result.
-after :: MonadIO m => Notification a -> AllocT m () -> SendT m (Deferred a)
+after :: MonadIO m => Notification a -> AllocT m () -> SendT m (Deferred m a)
 after n (AllocT m) = do
     v <- liftServer $ liftIO $ newIORef (error "BUG: after: uninitialized IORef")
-    modify $ \s -> s { notifications = fmap (writeIORef v) n : notifications s
+    modify $ \s -> s { notifications = fmap (liftIO . writeIORef v) n : notifications s
                      , cleanup = cleanup s >> m }
     return $ deferredIO (readIORef v)
 
@@ -178,15 +189,15 @@ finally (AllocT m) = modify $ \s -> s { cleanup = cleanup s >> m }
 --
 -- * using 'async' and observing the result of a 'SendT' action after calling
 -- 'exec'.
-newtype Async m a = Async (AllocT m (a, (Maybe OSC -> OSC)))
+newtype Async m a = Async (SendT m (a, (Maybe OSC -> OSC)))
 
 -- | Create an asynchronous command from an allocation action.
 --
 -- The first return value should be a server resource allocated on the client,
 -- the second a function that, given a completion packet, returns an OSC packet
 -- that asynchronously allocates the resource on the server.
-mkAsync :: AllocT m (a, (Maybe OSC -> OSC)) -> Async m a
-mkAsync = Async
+mkAsync :: Monad m => AllocT m (a, (Maybe OSC -> OSC)) -> Async m a
+mkAsync (AllocT m) = Async (liftServer m)
 
 -- | Create an asynchronous command from a side effecting OSC function.
 mkAsync_ :: Monad m => (Maybe OSC -> OSC) -> Async m ()
@@ -202,8 +213,9 @@ mkAsyncCM = mkAsync . liftM (second f)
         f msg (Just cm) = C.withCM msg cm
 
 -- | Add a synchronisation barrier.
-maybeSync :: MonadIO m => SendT m ()
-maybeSync = do
+addSync :: MonadIO m => SendT m a -> SendT m a
+addSync m = do
+    a <- m
     s <- gets syncState
     case s of
         NeedsSync -> do
@@ -211,15 +223,54 @@ maybeSync = do
             send (C.sync (fromIntegral sid))
             after_ (N.synced sid) (M.free State.syncIdAllocator sid)
         _ -> return ()
+    return a
 
+-- | Execute an server-side action after the asynchronous command has
+-- finished.
+whenDone :: MonadIO m => Async m a -> (a -> SendT m b) -> Async m b
+whenDone (Async m) f = Async $ do
+    (a, g) <- m
+    b <- f a
+    return (b, g)
+
+-- | Execute an asynchronous command asynchronously.
+asyncM :: MonadIO m => Async m (Deferred m a) -> SendT m (Deferred m a)
+asyncM (Async m) = do
+    t <- gets timeTag
+    ((a, g), s) <- liftServer $ runSendT t NeedsSync $ addSync m
+    case getOSC s of
+        [] -> do
+            send (g Nothing)
+            modify $ \s' -> (setSyncState NeedsSync s') {
+                notifications = notifications s' ++ notifications s
+              , cleanup = cleanup s' >> cleanup s }
+        osc -> do
+            let t' = case syncState s of
+                        HasSync -> immediately
+                        _       -> t
+            send $ g (Just (Bundle t' osc))
+            modify $ \s' -> (setSyncState HasSync s') {
+                notifications = notifications s' ++ notifications s
+              , cleanup = cleanup s' >> cleanup s }
+    return a
+
+-- | Execute an asynchronous command asynchronously.
+async :: MonadIO m => Async m a -> SendT m (Deferred m a)
+async = asyncM . flip whenDone (return . pure)
+
+{-
 -- | Execute an server-side action after the asynchronous command has
 -- finished. The corresponding server commands are scheduled at a time @t@ in
 -- the future.
-whenDone :: MonadIO m => Async m a -> Time -> (a -> SendT m (Deferred b)) -> SendT m (Deferred b)
-whenDone (Async (AllocT m)) t f = do
-    (a, g) <- liftServer m
-    (b, s) <- liftServer $ runSendT NeedsSync $ do { b <- f a ; maybeSync ; return b }
-    send $ g (Just (Bundle t (getOSC s)))
+whenDone :: MonadIO m => Async m a -> (a -> SendT m b) -> SendT m (Deferred b)
+whenDone (Async m) f = do
+    t <- gets timeTag
+    (a, g) <- m
+    (b, s) <- liftServer $ runSendT t NeedsSync $ addSync (f a)
+    let t' = case syncState s of
+                HasSync -> immediately
+                _       -> t
+    send $ g (Just (Bundle t' (getOSC s)))
     modify $ \s' -> s' {
         notifications = notifications s' ++ notifications s
       , cleanup = cleanup s' >> cleanup s
@@ -228,27 +279,33 @@ whenDone (Async (AllocT m)) t f = do
 
 -- | Execute an asynchronous command asynchronously.
 async :: MonadIO m => Async m a -> SendT m (Deferred a)
-async (Async (AllocT m)) = do
-    (a, g) <- liftServer m
+async (Async m) = do
+    (a, g) <- m
     send (g Nothing)
     modify $ setSyncState NeedsSync
     return $ pure a
+-}
 
 -- | Run the 'SendT' action and return the result.
 --
 -- All asynchronous commands and notifications are guaranteed to have finished
 -- when this function returns.
-exec :: MonadIO m => Time -> SendT m (Deferred a) -> ServerT m a
+exec :: MonadIO m => Time -> SendT m (Deferred m a) -> ServerT m a
 exec t m = do
-    (Deferred a, s) <- runSendT NoSync $ do { a <- m ; maybeSync ; return a }
+    (a, s) <- runSendT t NoSync $ addSync m
     case getOSC s of
         [] -> return ()
-        osc -> M.waitForAll (Bundle t osc) (notifications s) >>= liftIO . sequence_
+        osc -> do
+            -- liftIO $ print osc
+            let t' = case syncState s of
+                        HasSync -> immediately
+                        _ -> t
+            M.waitForAll (Bundle t' osc) (notifications s) >>= sequence_
     cleanup s
-    liftIO a
+    unDefer a
 
 -- | Infix operator version of 'exec'.
-(!>) :: MonadIO m => Time -> SendT m (Deferred a) -> ServerT m a
+(!>) :: MonadIO m => Time -> SendT m (Deferred m a) -> ServerT m a
 (!>) = exec
 
 -- | Run a 'SendT' action that returns a pure result.
