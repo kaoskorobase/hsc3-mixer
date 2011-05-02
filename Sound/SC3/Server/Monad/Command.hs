@@ -219,7 +219,7 @@ n_query_ :: (Node a, Monad m) => a -> SendT m ()
 n_query_ n = send $ C.n_query [fromIntegral (nodeId n)]
 
 -- | Query a node.
-n_query :: (Node a, MonadIO m) => a -> SendT m (Deferred N.NodeNotification)
+n_query :: (Node a, MonadIO m) => a -> SendT m (Deferred m N.NodeNotification)
 n_query n = n_query_ n >> after (N.n_info (nodeId n)) (return ())
 
 -- | Turn node on or off.

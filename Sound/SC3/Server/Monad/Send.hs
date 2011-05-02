@@ -31,6 +31,7 @@ module Sound.SC3.Server.Monad.Send
   , mkAsync_
   , mkAsyncCM
   , whenDone
+  , asyncM
   , async
   -- * Command execution
   , exec
@@ -42,7 +43,7 @@ module Sound.SC3.Server.Monad.Send
 import           Control.Applicative
 import           Control.Arrow (second)
 import           Control.Failure (Failure(..))
-import           Control.Monad (liftM)
+import           Control.Monad (ap, liftM)
 import           Control.Monad.IO.Class (MonadIO(..))
 import qualified Control.Monad.Trans.Class as Trans
 import           Control.Monad.Trans.State (StateT(..))
@@ -66,11 +67,11 @@ data SyncState =
 
 -- | Internal state used for constructing bundles from 'SendT' actions.
 data State m = State {
-    buildOSC      :: [OSC]                  -- ^ Current list of OSC messages.
-  , notifications :: [Notification (IO ())] -- ^ Current list of notifications to synchronise on.
-  , cleanup       :: ServerT m ()           -- ^ Cleanup action to deallocate resources.
-  , timeTag       :: Time                   -- ^ Time tag.
-  , syncState     :: SyncState              -- ^ Synchronisation barrier state.
+    buildOSC      :: [OSC]                         -- ^ Current list of OSC messages.
+  , notifications :: [Notification (ServerT m ())] -- ^ Current list of notifications to synchronise on.
+  , cleanup       :: ServerT m ()                  -- ^ Cleanup action to deallocate resources.
+  , timeTag       :: Time                          -- ^ Time tag.
+  , syncState     :: SyncState                     -- ^ Synchronisation barrier state.
   }
 
 -- | Construct a 'SendT' state with a given synchronisation state.
@@ -146,25 +147,25 @@ newtype AllocT m a = AllocT (ServerT m a)
 --
 -- Deferred has 'Applicative' and 'Functor' instances, so that complex values
 -- can be built from simple ones.
-newtype Deferred a = Deferred (IO a)
+newtype Deferred m a = Deferred { unDefer :: ServerT m a } deriving (Monad)
+
+instance Monad m => Functor (Deferred m) where
+    fmap f (Deferred a) = Deferred (liftM f a)
+
+instance Monad m => Applicative (Deferred m) where
+    pure = Deferred . return
+    (<*>) (Deferred f) (Deferred a) = Deferred (f `ap` a)
 
 -- | Construct a deferred value from an IO action.
-deferredIO :: IO a -> Deferred a
-deferredIO = Deferred
-
-instance Functor Deferred where
-    fmap f (Deferred a) = Deferred (f `fmap` a)
-
-instance Applicative Deferred where
-    pure = Deferred . pure
-    (<*>) (Deferred f) (Deferred a) = Deferred (f <*> a)
+deferredIO :: MonadIO m => IO a -> Deferred m a
+deferredIO = Deferred . liftIO
 
 -- | Register a cleanup action, to be executed after a notification has been
 -- received and return the deferred notification result.
-after :: MonadIO m => Notification a -> AllocT m () -> SendT m (Deferred a)
+after :: MonadIO m => Notification a -> AllocT m () -> SendT m (Deferred m a)
 after n (AllocT m) = do
     v <- liftServer $ liftIO $ newIORef (error "BUG: after: uninitialized IORef")
-    modify $ \s -> s { notifications = fmap (writeIORef v) n : notifications s
+    modify $ \s -> s { notifications = fmap (liftIO . writeIORef v) n : notifications s
                      , cleanup = cleanup s >> m }
     return $ deferredIO (readIORef v)
 
@@ -188,15 +189,15 @@ finally (AllocT m) = modify $ \s -> s { cleanup = cleanup s >> m }
 --
 -- * using 'async' and observing the result of a 'SendT' action after calling
 -- 'exec'.
-newtype Async m a = Async (AllocT m (a, (Maybe OSC -> OSC)))
+newtype Async m a = Async (SendT m (a, (Maybe OSC -> OSC)))
 
 -- | Create an asynchronous command from an allocation action.
 --
 -- The first return value should be a server resource allocated on the client,
 -- the second a function that, given a completion packet, returns an OSC packet
 -- that asynchronously allocates the resource on the server.
-mkAsync :: AllocT m (a, (Maybe OSC -> OSC)) -> Async m a
-mkAsync = Async
+mkAsync :: Monad m => AllocT m (a, (Maybe OSC -> OSC)) -> Async m a
+mkAsync (AllocT m) = Async (liftServer m)
 
 -- | Create an asynchronous command from a side effecting OSC function.
 mkAsync_ :: Monad m => (Maybe OSC -> OSC) -> Async m ()
@@ -212,8 +213,9 @@ mkAsyncCM = mkAsync . liftM (second f)
         f msg (Just cm) = C.withCM msg cm
 
 -- | Add a synchronisation barrier.
-maybeSync :: MonadIO m => SendT m ()
-maybeSync = do
+addSync :: MonadIO m => SendT m a -> SendT m a
+addSync m = do
+    a <- m
     s <- gets syncState
     case s of
         NeedsSync -> do
@@ -221,15 +223,50 @@ maybeSync = do
             send (C.sync (fromIntegral sid))
             after_ (N.synced sid) (M.free State.syncIdAllocator sid)
         _ -> return ()
+    return a
 
+-- | Execute an server-side action after the asynchronous command has
+-- finished.
+whenDone :: MonadIO m => Async m a -> (a -> SendT m b) -> Async m b
+whenDone (Async m) f = Async $ do
+    (a, g) <- m
+    b <- f a
+    return (b, g)
+
+-- | Execute an asynchronous command asynchronously.
+asyncM :: MonadIO m => Async m (Deferred m a) -> SendT m (Deferred m a)
+asyncM (Async m) = do
+    t <- gets timeTag
+    ((a, g), s) <- liftServer $ runSendT t NeedsSync $ addSync m
+    case getOSC s of
+        [] -> do
+            send (g Nothing)
+            modify $ \s' -> (setSyncState NeedsSync s') {
+                notifications = notifications s' ++ notifications s
+              , cleanup = cleanup s' >> cleanup s }
+        osc -> do
+            let t' = case syncState s of
+                        HasSync -> immediately
+                        _       -> t
+            send $ g (Just (Bundle t' osc))
+            modify $ \s' -> (setSyncState HasSync s') {
+                notifications = notifications s' ++ notifications s
+              , cleanup = cleanup s' >> cleanup s }
+    return a
+
+-- | Execute an asynchronous command asynchronously.
+async :: MonadIO m => Async m a -> SendT m (Deferred m a)
+async = asyncM . flip whenDone (return . pure)
+
+{-
 -- | Execute an server-side action after the asynchronous command has
 -- finished. The corresponding server commands are scheduled at a time @t@ in
 -- the future.
-whenDone :: MonadIO m => Async m a -> (a -> SendT m (Deferred b)) -> SendT m (Deferred b)
-whenDone (Async (AllocT m)) f = do
+whenDone :: MonadIO m => Async m a -> (a -> SendT m b) -> SendT m (Deferred b)
+whenDone (Async m) f = do
     t <- gets timeTag
-    (a, g) <- liftServer m
-    (b, s) <- liftServer $ runSendT t NeedsSync $ do { b <- f a ; maybeSync ; return b }
+    (a, g) <- m
+    (b, s) <- liftServer $ runSendT t NeedsSync $ addSync (f a)
     let t' = case syncState s of
                 HasSync -> immediately
                 _       -> t
@@ -242,32 +279,33 @@ whenDone (Async (AllocT m)) f = do
 
 -- | Execute an asynchronous command asynchronously.
 async :: MonadIO m => Async m a -> SendT m (Deferred a)
-async (Async (AllocT m)) = do
-    (a, g) <- liftServer m
+async (Async m) = do
+    (a, g) <- m
     send (g Nothing)
     modify $ setSyncState NeedsSync
     return $ pure a
+-}
 
 -- | Run the 'SendT' action and return the result.
 --
 -- All asynchronous commands and notifications are guaranteed to have finished
 -- when this function returns.
-exec :: MonadIO m => Time -> SendT m (Deferred a) -> ServerT m a
+exec :: MonadIO m => Time -> SendT m (Deferred m a) -> ServerT m a
 exec t m = do
-    (Deferred a, s) <- runSendT t NoSync $ do { a <- m ; maybeSync ; return a }
+    (a, s) <- runSendT t NoSync $ addSync m
     case getOSC s of
         [] -> return ()
         osc -> do
-            liftIO $ print osc
+            -- liftIO $ print osc
             let t' = case syncState s of
                         HasSync -> immediately
                         _ -> t
-            M.waitForAll (Bundle t' osc) (notifications s) >>= liftIO . sequence_
+            M.waitForAll (Bundle t' osc) (notifications s) >>= sequence_
     cleanup s
-    liftIO a
+    unDefer a
 
 -- | Infix operator version of 'exec'.
-(!>) :: MonadIO m => Time -> SendT m (Deferred a) -> ServerT m a
+(!>) :: MonadIO m => Time -> SendT m (Deferred m a) -> ServerT m a
 (!>) = exec
 
 -- | Run a 'SendT' action that returns a pure result.

@@ -32,16 +32,16 @@ data Command = Command
 mkRedirect :: MonadIO m => Group -> AudioBus -> SendT m Redirect
 mkRedirect g _ = liftM Redirect (g_new AddToTail g)
 
-mkFader :: MonadIO m => Group -> AudioBus -> SendT m (Deferred Fader)
+mkFader :: MonadIO m => Group -> AudioBus -> Async m Fader
 mkFader parent bus = do
-    g <- g_new AddToTail parent
     d_new "fader" (faderDef (numChannels bus)) `whenDone` \d -> do
+        g <- g_new AddToTail parent
         s <- s_new d AddToTail g [ ("bus", fromIntegral (busId bus)) ]
-        return $ pure $ Fader g s
+        return $ Fader g s
 
 data OutputBus = Hardware Int Int | Private Int deriving (Eq, Show)
 
-mkStrip :: MonadIO m => OutputBus -> SendT m (Deferred Strip)
+mkStrip :: MonadIO m => OutputBus -> SendT m (Deferred m Strip)
 mkStrip o = do
     b <- case o of
             Hardware n i -> outputBus n i
@@ -49,7 +49,7 @@ mkStrip o = do
     g <- g_new_ AddToTail
     ig <- g_new AddToTail g
     r1 <- mkRedirect g b
-    f <- mkFader g b
+    f <- async $ mkFader g b
     r2 <- mkRedirect g b
     return $ pure (Strip b g ig r1) <*> f <*> pure r2
 
