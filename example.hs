@@ -3,11 +3,11 @@ import           Control.Concurrent
 import           Control.Monad
 import           Control.Monad.IO.Class (MonadIO)
 import           Sound.SC3.Server.Process.Monad
-import           Reactive hiding (accumulate)
+-- import           Reactive hiding (accumulate)
 import           Sound.SC3.Mixer
 import           Sound.SC3.Server.Monad.Command
 import           Sound.SC3.Server.Notification
-import           Sound.SC3.Server.Reactive
+-- import           Sound.SC3.Server.Reactive
 import qualified Sound.SC3.Server.Command as C
 import           Sound.OpenSoundControl (immediately)
 import qualified Sound.OpenSoundControl as OSC
@@ -27,23 +27,23 @@ playDefault t = do
         OSC.UTCr (t' + lat) ~> s_release (-1 - gate) synth
     return ()
  
-inputLoop :: EventSource Double -> Double -> IO ()
-inputLoop src t = do
-    fire src t
-    let t' = t + dt
-    OSC.pauseThreadUntil t'
-    inputLoop src t'
+-- inputLoop :: EventSource Double -> Double -> IO ()
+-- inputLoop src t = do
+--     fire src t
+--     let t' = t + dt
+--     OSC.pauseThreadUntil t'
+--     inputLoop src t'
  
-mainR = do
-    src <- newEventSource
-    forkIO . inputLoop src =<< OSC.utcr
-    -- withDefaultInternal $ do
-    withDefaultSynth $ do
-        -- dumpOSC TextPrinter
-        -- sync immediately $ send $ C.dumpOSC C.TextPrinter
-        b <- accumulate (\t _ -> playDefault t) () (fromEventSource src)
-        liftIO $ reactimate $ fmap return $ changes b
-        liftIO $ threadDelay (truncate (300e6))
+-- mainR = do
+--     src <- newEventSource
+--     forkIO . inputLoop src =<< OSC.utcr
+--     -- withDefaultInternal $ do
+--     withDefaultSynth $ do
+--         -- dumpOSC TextPrinter
+--         -- sync immediately $ send $ C.dumpOSC C.TextPrinter
+--         b <- accumulate (\t _ -> playDefault t) () (fromEventSource src)
+--         liftIO $ reactimate $ fmap return $ changes b
+--         liftIO $ threadDelay (truncate (300e6))
  
 ioLoop t = do
     playDefault t

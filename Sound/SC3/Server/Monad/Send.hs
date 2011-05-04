@@ -292,23 +292,36 @@ async (Async m) = do
     return $ pure a
 -}
 
+run :: MonadIO m => Time -> SendT m (Deferred m a) -> ServerT m (ServerT m a, Maybe (OSC, [Notification (ServerT m ())]), ServerT m ())
+run t m = do
+    (Deferred a, s) <- runSendT t NoSync $ addSync m
+    case getOSC s of
+        [] -> return (a, Nothing, cleanup s)
+        osc -> let t' = case syncState s of
+                            HasSync -> immediately
+                            _ -> t
+               in return (a, Just (Bundle t' osc, notifications s), cleanup s)
+
 -- | Run the 'SendT' action and return the result.
 --
 -- All asynchronous commands and notifications are guaranteed to have finished
 -- when this function returns.
 exec :: MonadIO m => Time -> SendT m (Deferred m a) -> ServerT m a
 exec t m = do
-    (a, s) <- runSendT t NoSync $ addSync m
-    case getOSC s of
-        [] -> return ()
-        osc -> do
-            -- liftIO $ print osc
-            let t' = case syncState s of
-                        HasSync -> immediately
-                        _ -> t
-            M.waitForAll (Bundle t' osc) (notifications s) >>= sequence_
-    cleanup s
-    unDefer a
+    -- (a, s) <- runSendT t NoSync $ addSync m
+    -- case getOSC s of
+    --     [] -> return ()
+    --     osc -> do
+    --         -- liftIO $ print osc
+    --         let t' = case syncState s of
+    --                     HasSync -> immediately
+    --                     _ -> t
+    (a, sync, cleanup) <- run t m
+    case sync of
+        Nothing -> return ()
+        Just (osc, ns) -> M.waitForAll osc ns >>= sequence_
+    cleanup
+    a
 
 -- | Infix operator version of 'exec'.
 (!>) :: MonadIO m => Time -> SendT m (Deferred m a) -> ServerT m a

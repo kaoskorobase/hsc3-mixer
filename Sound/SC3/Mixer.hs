@@ -3,9 +3,9 @@ module Sound.SC3.Mixer where
 import           Control.Applicative
 import           Control.Monad (liftM)
 import           Control.Monad.IO.Class (MonadIO)
-import           Reactive hiding (accumulate)
+-- import           Reactive hiding (accumulate)
 import           Sound.SC3.Mixer.SynthDefs
-import           Sound.SC3.Server.Reactive
+-- import           Sound.SC3.Server.Reactive
 import           Sound.SC3.Server.Monad.Command
 import           Sound.OpenSoundControl (immediately)
 
@@ -16,6 +16,8 @@ data Redirect = Redirect {
 data Fader = Fader {
     faderGroup :: Group
   , faderSynth :: Synth
+  , faderLevel :: Double
+  , faderMute :: Bool
   } deriving (Show)
 
 data Strip = Strip {
@@ -35,7 +37,7 @@ mkFader parent bus = do
     d_new "fader" (faderDef (numChannels bus)) `whenDone` \d -> do
         g <- g_new AddToTail parent
         s <- s_new d AddToTail g [ ("bus", fromIntegral (busId bus)) ]
-        return $ Fader g s
+        return $ Fader g s 0 False
 
 mkStrip :: MonadIO m => Int -> SendT m (Deferred m Strip)
 mkStrip n = do
@@ -47,11 +49,15 @@ mkStrip n = do
     r2 <- mkRedirect g b
     return $ pure (Strip b g ig r1) <*> f <*> pure r2
 
-setLevel :: MonadIO m => Double -> Strip -> SendT m ()
-setLevel x s = n_set (faderSynth (fader s)) [("level", x)]
+setLevel :: MonadIO m => Double -> Strip -> SendT m Strip
+setLevel x s = do
+    n_set (faderSynth (fader s)) [("level", x)]
+    return $ s { fader = (fader s) { faderLevel = x} }
 
-setMute :: MonadIO m => Bool -> Strip -> SendT m ()
-setMute x s = n_set (faderSynth (fader s)) [("mute", fromIntegral (fromEnum x :: Int))]
+setMute :: MonadIO m => Bool -> Strip -> SendT m Strip
+setMute x s = do
+    n_set (faderSynth (fader s)) [("mute", fromIntegral (fromEnum x :: Int))]
+    return $ s { fader = (fader s) { faderMute = x} }
 
 play :: MonadIO m => Strip -> SynthDef -> AddAction -> [(String, Double)] -> SendT m Synth
 play s d a xs = s_new d a (inputGroup s) (("out", fromIntegral (busId (bus s))):xs)

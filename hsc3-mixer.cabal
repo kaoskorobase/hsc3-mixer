@@ -14,23 +14,24 @@ Tested-With:        GHC == 6.10.1, GHC == 6.12.3, GHC == 7.0.1
 Build-Type:         Simple
 Cabal-Version:      >= 1.9.2
 
-Extra-Source-Files:
-    include/Accessor.h
-
-Executable hsc3-mixer
-    Main-Is: mixer.hs
-    Other-Modules:
+Library
+    Exposed-Modules:
+        Data.Signal.SF
+        Data.Signal.SF.Base
+        Data.Signal.SF.Event
+        Reactive
+        Reactive.Classes
+        Reactive.Core
         Sound.SC3.Mixer
         Sound.SC3.Mixer.SynthDefs
         Sound.SC3.Server.Monad.Command
         Sound.SC3.Server.Monad.Send
-        Sound.SC3.Server.Reactive
-    Ghc-Options:      -W -threaded -rtsopts
-    Ghc-Prof-Options: -W -threaded -rtsopts -auto-all
+        -- Sound.SC3.Server.Reactive
     Build-Depends:
         base >= 4 && < 5
       , bytestring
       , bzlib
+      , CCA >= 0.1
       , containers
       , failure
       , hosc >= 0.10
@@ -38,7 +39,48 @@ Executable hsc3-mixer
       , hsc3-process >= 0.6
       , hsc3-server >= 0.3
       , random
-      , reactive-banana
+      , SHA2
+      , transformers
+    Ghc-Options:
+        -W
+    Ghc-Prof-Options:
+        -W -auto-all
+
+Executable hsc3-mixer
+    Main-Is: mixer.hs
+    Ghc-Options:      -W -threaded -rtsopts
+    Ghc-Prof-Options: -W -threaded -rtsopts -auto-all
+    Build-Depends:
+        base >= 4 && < 5
+      , bytestring
+      , bzlib
+      , CCA >= 0.1
+      , containers
+      , failure
+      , hosc >= 0.10
+      , hsc3 >= 0.10
+      , hsc3-process >= 0.6
+      , hsc3-server >= 0.3
+      , random
+      , SHA2
+      , transformers
+
+Executable hsc3-mixer-sf
+    Main-Is: mixer-sf.hs
+    Ghc-Options:      -W -threaded -rtsopts
+    Ghc-Prof-Options: -W -threaded -rtsopts -auto-all
+    Build-Depends:
+        base >= 4 && < 5
+      , bytestring
+      , bzlib
+      , CCA >= 0.1
+      , containers
+      , failure
+      , hosc >= 0.10
+      , hsc3 >= 0.10
+      , hsc3-process >= 0.6
+      , hsc3-server >= 0.3
+      , random
       , SHA2
       , transformers
 
@@ -57,44 +99,8 @@ Executable hsc3-example
       , hsc3-process >= 0.6
       , hsc3-server >= 0.3
       , random
-      , reactive-banana
       , SHA2
       , transformers
-
--- Library
---     Exposed-Modules:
---         Sound.SC3.Server.Allocator
---         Sound.SC3.Server.Allocator.Range
---         Sound.SC3.Server.Allocator.BlockAllocator.FirstFit
---         Sound.SC3.Server.Allocator.SetAllocator
---         Sound.SC3.Server.Allocator.SimpleAllocator
---         Sound.SC3.Server.Allocator.Wrapped
---         Sound.SC3.Server.Connection
---         Sound.SC3.Server.Monad
---         Sound.SC3.Server.Notification
---         Sound.SC3.Server.Process.Monad
---         Sound.SC3.Server.State
---         Sound.SC3.Server.State.Concurrent
---     Other-Modules:
---         Sound.SC3.Server.Allocator.BlockAllocator.FreeList        
---     Build-Depends:
---         base >= 3 && < 5
---       , bitset >= 1.0
---       , containers
---       , data-accessor >= 0.2
---       , deepseq >= 1.1
---       , failure >= 0.1
---       , hosc >= 0.8
---       , hsc3 >= 0.7
---       , hsc3-process >= 0.5
---       , strict-concurrency
---       , transformers
---     Include-Dirs:
---         include
---     Ghc-Options:
---         -W
---     Ghc-Prof-Options:
---         -W -auto-all
 
 Source-Repository head
     Type:       git
