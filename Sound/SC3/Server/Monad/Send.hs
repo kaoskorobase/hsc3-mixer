@@ -34,6 +34,7 @@ module Sound.SC3.Server.Monad.Send
   , asyncM
   , async
   -- * Command execution
+  , run
   , exec
   , (!>)
   , execPure
@@ -221,7 +222,7 @@ addSync :: MonadIO m => SendT m a -> SendT m a
 addSync m = do
     a <- m
     b <- gets hasOSC
-    when True $ do
+    when b $ do
         s <- gets syncState
         case s of
             NeedsSync -> do
@@ -292,15 +293,16 @@ async (Async m) = do
     return $ pure a
 -}
 
-run :: MonadIO m => Time -> SendT m (Deferred m a) -> ServerT m (ServerT m a, Maybe (OSC, [Notification (ServerT m ())]), ServerT m ())
+run :: MonadIO m => Time -> SendT m (Deferred m a) -> ServerT m (ServerT m a, Maybe (OSC, [Notification (ServerT m ())]))
 run t m = do
-    (Deferred a, s) <- runSendT t NoSync $ addSync m
+    (a, s) <- runSendT t NoSync $ addSync m
+    let result = cleanup s >> unDefer a
     case getOSC s of
-        [] -> return (a, Nothing, cleanup s)
+        [] -> return (result, Nothing)
         osc -> let t' = case syncState s of
                             HasSync -> immediately
                             _ -> t
-               in return (a, Just (Bundle t' osc, notifications s), cleanup s)
+               in return (result, Just (Bundle t' osc, notifications s))
 
 -- | Run the 'SendT' action and return the result.
 --
@@ -316,12 +318,11 @@ exec t m = do
     --         let t' = case syncState s of
     --                     HasSync -> immediately
     --                     _ -> t
-    (a, sync, cleanup) <- run t m
+    (action, sync) <- run t m
     case sync of
         Nothing -> return ()
         Just (osc, ns) -> M.waitForAll osc ns >>= sequence_
-    cleanup
-    a
+    action
 
 -- | Infix operator version of 'exec'.
 (!>) :: MonadIO m => Time -> SendT m (Deferred m a) -> ServerT m a
