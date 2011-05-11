@@ -1,10 +1,12 @@
 {-# LANGUAGE Arrows, DeriveDataTypeable #-}
 import           Control.Applicative
 import           Control.Arrow
+import           Control.Category (id)
 import           Control.Concurrent
 import           Control.Monad
 import           Control.Monad.Fix (MonadFix)
 import           Control.Monad.IO.Class (MonadIO)
+import qualified Data.List as L
 import           Data.Maybe
 import           Data.Monoid
 import           Data.Signal.SF as SF
@@ -14,15 +16,39 @@ import           Sound.SC3.Mixer
 import           Sound.SC3.Server.Monad.Command
 import           Sound.SC3.Server.Notification
 import qualified Sound.SC3.Server.Command as C
-import           Sound.OpenSoundControl (Datum(..), OSC(..), immediately)
+import           Sound.OpenSoundControl (Datum(..), OSC(..), Time, immediately)
 import qualified Sound.OpenSoundControl as OSC
 import qualified Sound.OpenSoundControl.Transport.UDP as OSC
 import           System.Random
+import           Prelude hiding (id)
 
 dt = 0.00125
 dur = 0.02
 gate = 0.2
 lat = 0.03
+
+-- switch :: Monad m => SF m a (b, Event c) -> (c -> SF m a b) -> SF m a b
+
+waitFor :: MonadIO m => SF (ServerT m) (Event OSC, Event (Time, SendT m (Deferred m a))) (Event a)
+waitFor = SF tf0
+    where
+        tf0 (_, NoEvent) = return (NoEvent, SF tf0)
+        tf0 (_, (Event (t, m))) = do
+            (ma, sync) <- run t m
+            case sync of
+                Nothing -> tf ma [] (NoEvent, NoEvent)
+                Just (osc, ns) -> do
+                    send osc
+                    return (NoEvent, SF (tf ma ns))
+        tf ma [] _ = do
+            a <- ma
+            return (pure a, SF tf0)
+        tf ma ns (NoEvent, _) = return (NoEvent, SF (tf ma ns))
+        tf ma ns (Event osc, _) =
+            let (ns', ms) = L.partition (isJust.snd) (zip ns (map (flip match osc) ns))
+            in do
+                sequence_ (map (fromJust . snd) ms)
+                tf ma (map fst ns') (NoEvent, NoEvent)
 
 playDefault :: MonadIO m => Double -> Strip -> ServerT m ()
 playDefault _ s = do
@@ -66,14 +92,6 @@ oscFloatE cmd = address cmd >>> arr (join . fmap f)
 oscFloatB :: Monad m => String -> Double -> SF m (Event OSC) Double
 oscFloatB cmd x0 = oscFloatE cmd >>> stepper x0
 
-mapAccum :: MonadFix m => (acc -> x -> (acc, y)) -> acc -> SF m x (acc, y)
-mapAccum f acc0 = SF (tf acc0)
-    where
-        tf acc x = let (acc', y) = f acc x in return ((acc', y), SF (tf acc'))
-
-mapAccum_ :: MonadFix m => (acc -> x -> (acc, y)) -> acc -> SF m x y
-mapAccum_ f acc0 = mapAccum f acc0 >>> arr snd
-
 bang :: MonadFix m => (Double -> Double -> Bool) -> SF m Double Bool
 -- bang f = SF.scanl g (Nothing, False) >>> arr snd -- mapAccum_ g Nothing
 --     where
@@ -106,8 +124,8 @@ instance Show (StripEvent m) where
     show (Mute x)  = "Mute " ++ show x
     show (Play _)  = "Play"
 
-strip :: MonadIO m => Int -> SF (ServerT m) (Event (StripEvent m)) Strip
-strip n = arr (fmap f) >>> accumM s0
+strip :: MonadIO m => Int -> SF (ServerT m) (Event [StripEvent m]) Strip
+strip n = arr (fmap (flip (foldM f))) >>> accumM s0
     where
         s0 = do
             s0 <- immediately !> mkStrip n
@@ -117,7 +135,7 @@ strip n = arr (fmap f) >>> accumM s0
                 async $ connect (InputStrip s0, 1) (OutputNode o, 1)
             return s0
     -- return $ accumE (return s0) (fmap f ((Level <$> level i) `mappend` (Mute <$> mute i) `mappend` (Play <$> event i)))
-        f e s = do
+        f s e = do
             case e of
                 Level l -> immediately ~> setLevel l s
                 Mute m  -> immediately ~> setMute m s
@@ -129,20 +147,20 @@ class HasTimer a where
 instance HasTimer a => HasTimer (Event a) where
     timer = join . fmap timer . eventToMaybe
 
-run :: Monad m => m a -> (b -> m ()) -> SF m a b -> m ()
-run get put sf = do
+runLoop :: Monad m => m a -> (b -> m ()) -> SF m a b -> m ()
+runLoop get put sf = do
     a <- get
     (b, sf') <- runSF sf a
     put b
-    run get put sf'
+    runLoop get put sf'
 
-stripInput :: (MonadFix m, MonadIO m) => SF (ServerT m) (Event OSC) (Event (StripEvent m))
+stripInput :: (MonadFix m, MonadIO m) => SF (ServerT m) (Event OSC) (Event [StripEvent m])
 stripInput = proc osc -> do
-    level <- arr (fmap Level) <<< oscFloatE "/midi/cc3/1" -< osc
-    -- mute  <- arr (fmap Mute) <<< edge <<< bang (threshold 0.5) <<< oscFloatB "/midi/cc4/1" 0 -< osc
-    mute  <- arr (fmap (Mute . (>0.5))) <<< oscFloatE "/midi/cc4/1" -< osc
-    playE <- arr (fmap Play) <<< arr (fmap playDefault) <<< oscFloatE "/midi/cc5/1" -< osc
-    returnA -< (level `merge` mute `merge` playE)
+    level <- arr (fmap ((:[]) . Level)) <<< oscFloatE "/midi/cc3/1" -< osc
+    -- mute  <- arr (fmap ((:[]) . Mute)) <<< edge <<< bang (threshold 0.5) <<< oscFloatB "/midi/cc4/1" 0 -< osc
+    mute  <- arr (fmap ((:[]) . Mute)) <<< edge False <<< arr (>0.5) <<< oscFloatB "/midi/cc4/1" 0 -< osc
+    playE <- arr (fmap ((:[]) . Play)) <<< arr (fmap playDefault) <<< oscFloatE "/midi/cc5/1" -< osc
+    returnA -< level `mappend` mute `mappend` playE
 
 main :: IO ()
 -- main = return ()
@@ -157,5 +175,8 @@ main = do
         -- b <- accumulate (\t _ -> playDefault t) () osc
         -- osc <- liftM (fmap unOSC) $ fromEventSource src
         let s = stripInput >>> strip 2
-        run (fmap Event $ liftIO $ readChan src) (liftIO.print) s
+            o = liftIO . print
+            -- o = const (return ())
+        runLoop (fmap Event $ liftIO $ readChan src) o s
+        -- runLoop (fmap Event $ liftIO $ readChan src) o stripInput
         -- liftIO $ reactimate $ fmap print $ changes $ level i

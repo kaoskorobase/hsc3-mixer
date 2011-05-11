@@ -17,6 +17,9 @@ module Data.Signal.SF (
   , accumM
   , stepper
   , scanl
+  , mapAccumM
+  , mapAccum
+  , mapAccum_
   , edge
   , sample
   , sample_
@@ -120,13 +123,13 @@ hold a0 = scanl f a0
         f _ (Event a) = a
 
 -- | Signal to event
-edge :: MonadFix m => SF m Bool (Event Bool)
-edge = scanl f (False, NoEvent) >>> arr snd
+edge :: MonadFix m => Bool -> SF m Bool (Event Bool)
+edge = mapAccum_ f
     where
-        f (False, _) False = (False, NoEvent)
-        f (False, _) True  = (True, Event True)
-        f (True, _)  False = (False, Event False)
-        f (True, _)  True  = (True, NoEvent)
+        f False False = (False, NoEvent)
+        f False True  = (True, Event True)
+        f True  False = (False, Event False)
+        f True  True  = (True, NoEvent)
 
 sample :: Monad m => SF m (a, Event b) (Event (a, b))
 sample = arr (\(a, e) -> event NoEvent (\b -> Event (a, b)) e)
@@ -201,6 +204,22 @@ countUp =
       rec 
          i <- init 0 -< i + 1
       returnA -< i
+
+mapAccumM :: MonadFix m => (acc -> x -> m (acc, y)) -> m acc -> SF m x (acc, y)
+mapAccumM f acc0 = SF tf0
+    where
+        tf0 x = do { acc <- acc0; tf acc x }
+        tf acc x = do
+            (acc', y) <- f acc x
+            return ((acc', y), SF (tf acc'))
+
+mapAccum :: MonadFix m => (acc -> x -> (acc, y)) -> acc -> SF m x (acc, y)
+mapAccum f acc0 = SF (tf acc0)
+    where
+        tf acc x = let (acc', y) = f acc x in return ((acc', y), SF (tf acc'))
+
+mapAccum_ :: MonadFix m => (acc -> x -> (acc, y)) -> acc -> SF m x y
+mapAccum_ f acc0 = mapAccum f acc0 >>> arr snd
 
 -- ====================================================================
 -- Switching combinators
