@@ -10,6 +10,7 @@ module Data.Signal.SF.Event (
 
 import Control.Applicative
 import Control.Monad (MonadPlus(..))
+import Data.Monoid (Monoid(..))
 
 data Event a = NoEvent | Event a deriving (Eq, Read, Show)
 
@@ -69,3 +70,10 @@ instance MonadPlus Event where
 
    NoEvent `mplus` ys = ys
    xs      `mplus` _  = xs
+
+instance Monoid a => Monoid (Event a) where
+    mempty = NoEvent
+    NoEvent `mappend` NoEvent = mempty
+    a `mappend` NoEvent = a
+    NoEvent `mappend` b = b
+    (Event a) `mappend` (Event b) = pure (a `mappend` b)
