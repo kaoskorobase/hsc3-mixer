@@ -65,8 +65,8 @@
 
 ------------------------------------------------------------------------------}
 
-module Reactive.Core (
-    -- * Events
+module Reactive.Core
+  ( -- * Events
     -- $Event
     Event, never, fromEventSource, reactimateE,
     mapE, mapM, filter, filterChanges, partition,
@@ -75,7 +75,7 @@ module Reactive.Core (
     
     -- * Behaviors
     -- $Behavior
-    Behavior, behavior, always, initial, changes, mapB, applyB, applyE,
+    Behavior, behavior, always, poll, changes, mapB, applyB, applyE,
     accumulate', accumulateChange, accumulateM, accumulateChangeM,
     mapAccum, zip, zipWith,
     
@@ -88,16 +88,17 @@ module Reactive.Core (
     
     -- * Internal
     testCounter, testApply
-    ) where
+  ) where
 
 import Prelude hiding (map, mapM, filter, zip, zipWith)
 import Control.Applicative
 import Control.Concurrent
-import Control.Monad ((<=<), liftM, when)
+import Control.Monad ((<=<), join, liftM, when)
 import Control.Monad.IO.Class (MonadIO(..))
 import Data.IORef
 import Data.Maybe
 import Data.Monoid
+import qualified Data.List as L
 import System.IO.Unsafe
 import System.IO
 
@@ -135,36 +136,60 @@ type Prepare m a = m a
     you can finally obtain an 'Event' via the `fromEventSource' function.
 -}
 
+type Handler m a = a -> m ()
+type HandlerId = Int
+
+newtype Ref a = Ref { unRef :: IORef a }
+
+newRef :: MonadIO m => a -> m (Ref a)
+newRef = liftM Ref . liftIO . newIORef
+
+readRef :: MonadIO m => Ref a -> m a
+readRef = liftIO . readIORef . unRef
+
+writeRef :: MonadIO m => Ref a -> a -> m ()
+writeRef r = liftIO . writeIORef (unRef r)
+
+modifyRef :: MonadIO m => Ref a -> (a -> a) -> m ()
+modifyRef r = liftIO . modifyIORef (unRef r)
 
 -- | An 'EventSource' is a facility where you can register
 -- callback functions, aka event handlers.
 -- 'EventSource's are the precursor of proper 'Event's.
 data EventSource m a = EventSource {
                     -- | Replace all event handlers by this one.
-                      setEventHandler :: (a -> m ()) -> Prepare m ()
+                      addEventHandler :: Handler m a -> Prepare m HandlerId
                     -- | Retrieve the currently registered event handler.
-                    , getEventHandler :: Prepare m (a -> m ()) }
+                    , removeEventHandler :: HandlerId -> Prepare m ()
+                    , getEventHandlers :: Prepare m [Handler m a] }
 
 -- add an additional event handler to the source
-addEventHandler :: Monad m => EventSource m a -> (a -> m ()) -> Prepare m ()
-addEventHandler es f = do
-    g <- getEventHandler es
-    setEventHandler es (\a -> g a >> f a)
+-- addEventHandler :: Monad m => EventSource m a -> (a -> m ()) -> Prepare m ()
+-- addEventHandler es f = do
+--     g <- getEventHandler es
+--     setEventHandler es (\a -> g a >> f a)
 
 -- | Fire the event handler of an event source manually.
 -- Useful for hooking into external event sources.
-fire :: Monad m => EventSource m a -> a -> m ()
-fire es a = getEventHandler es >>= ($ a)
+-- fire :: Monad m => EventSource m a -> a -> m ()
+-- fire es a = getEventHandlers es >>= mapM_ ($ a)
     -- here, the purpose of the Prepare monad is intentionally violated
 
 -- | Create a new store for callback functions.
 -- They have to be fired manually with the 'fire' function.
 newEventSource :: MonadIO m => Prepare m (EventSource m a)
 newEventSource = do
-    handlerRef <- liftIO $ newIORef (const $ return ())
+    handlerRef <- newRef (0, [])
     return $ EventSource
-        { setEventHandler = liftIO . writeIORef handlerRef
-        , getEventHandler = liftIO (readIORef handlerRef) }
+        { addEventHandler = \h -> do
+            (i, hs) <- readRef handlerRef
+            writeRef handlerRef (i+1, hs ++ [(i, h)])
+            return i
+        , removeEventHandler = \i -> modifyRef handlerRef $ \(n, hs) -> (n, L.deleteBy (\(a, _) (b, _) -> a == b) (i, undefined) hs)
+        , getEventHandlers = liftM (fmap snd . snd) (readRef handlerRef) }
+
+fire :: MonadIO m => EventSource m a -> a -> m ()
+fire es a =  mapM_ ($a) =<< getEventHandlers es
 
 {-----------------------------------------------------------------------------
     Event
@@ -179,7 +204,7 @@ It represents a stream of values as they occur in time.
 
 
 -- who would have thought that the implementation is this simple
-type AddHandler m a = (a -> m ()) -> Prepare m ()
+type AddHandler m a = Handler m a -> Prepare m HandlerId
 
 {- | @Event a@ represents a stream of events as they occur in time.
 Semantically, you can think of @Event a@ as an infinite list of values
@@ -194,32 +219,49 @@ In particular, most of the subsequent operations
 will be explained in terms of this model.
 
 -}
-data Event m a    = Never
-                  | Event { addHandler :: AddHandler m a }
+data Event m a = Never
+               | Event { source :: EventSource m a
+                       , remove :: Prepare m () }
 
--- smart constructor, ensures proper sharing
-mkEvent :: MonadIO m => AddHandler m a -> Prepare m (Event m a)
-mkEvent h = share $ Event { addHandler = h }
-    -- What happens when  unsafePerformIO  is accidentally exectued twice?
-    -- In that case, work will be duplicated as there will be two
-    -- buffers (event sources) for one and the same event.
-    -- But this is the same as the situation without any sharing at all,
-    -- so there's no harm done.
-    -- There might be a problem with executing IO actions twice, though.
-    -- \h -> liftIO $ unsafePerformIO $ share $ Event { addHandler = h }
-    where
-    -- Cache the value of an event,
-    -- so that it's not recalculated for multiple consumers
-    share :: MonadIO m => Event m a -> Prepare m (Event m a)
-    share e1 = do
-        es2 <- newEventSource
-        addHandler e1 (fire es2) -- sharing happens through call-by-need
-        return $ fromEventSource es2
+-- -- -- smart constructor, ensures proper sharing
+-- mkEvent1 :: MonadIO m => (Handler m a -> Handler m a) -> Prepare m (Event m a)
+-- mkEvent1 g = do
+--     s <- newEventSource
+--     r <- addHandler (g (fire s))
+--     return $ Event s r
+--     -- share $ Event { source = , parents = ps }
+--     -- -- What happens when  unsafePerformIO  is accidentally exectued twice?
+--     -- -- In that case, work will be duplicated as there will be two
+--     -- -- buffers (event sources) for one and the same event.
+--     -- -- But this is the same as the situation without any sharing at all,
+--     -- -- so there's no harm done.
+--     -- -- There might be a problem with executing IO actions twice, though.
+--     -- -- \h -> liftIO $ unsafePerformIO $ share $ Event { addHandler = h }
+--     -- where
+--     -- -- Cache the value of an event,
+--     -- -- so that it's not recalculated for multiple consumers
+--     -- share :: MonadIO m => Event m a -> Prepare m (Event m a)
+--     -- share e1 = do
+--     --     es2 <- newEventSource
+--     --     addHandler e1 (fire es2) -- sharing happens through call-by-need
+--     --     return $ fromEventSource es2
 
 -- | Derive an 'Event' from an 'EventSource'.
 -- Apart from 'never', this is the only way to construct events.
 fromEventSource :: Monad m => EventSource m a -> Event m a
-fromEventSource s = Event { addHandler = addEventHandler s }
+fromEventSource s = Event { source = s, remove = return () }
+
+removeHandler :: MonadIO m => HandlerId -> Event m a -> Prepare m ()
+removeHandler _ Never = return ()
+removeHandler i e = do
+    removeEventHandler (source e) i
+    b <- liftM null (getEventHandlers (source e))
+    when b $ remove e
+
+addHandler :: MonadIO m => Event m a -> Handler m a -> Prepare m (Prepare m ())
+addHandler e h = do
+    i <- addEventHandler (source e) h
+    return $ removeHandler i e
 
 -- | Schedule an IO event to be executed whenever it happens.
 -- This is the only way to observe events.
@@ -229,9 +271,9 @@ fromEventSource s = Event { addHandler = addEventHandler s }
 -- 
 -- The 'Prepare' monad indicates that you should call this function
 -- during program initialization only.
-reactimateE :: Monad m => Event m (m a) -> Prepare m ()
-reactimateE Never = return ()
-reactimateE e     = addHandler e (\m -> m >> return ())
+reactimateE :: MonadIO m => Event m (m a) -> Prepare m (Prepare m ())
+reactimateE Never = return (return ())
+reactimateE e = addHandler e (\m -> m >> return ())
 
 -- | The value 'never' denotes the event that never happens.
 -- We can model it as the empty stream of events, @never = []@.
@@ -248,14 +290,20 @@ never = Never
 --         where addHandler' g = addHandler e (g . f)
 mapE :: MonadIO m => (a -> b) -> Event m a -> Prepare m (Event m b)
 mapE _ Never     = return Never
-mapE f e         = mkEvent addHandler'
-    where addHandler' g = addHandler e (g . f)
+-- mapE f e         = mkEvent addHandler'
+--     where addHandler' g = addHandler e (g . f)
+mapE f e         = do
+    s <- newEventSource
+    r <- addHandler e (fire s . f)
+    return Event { source = s, remove = r }
 
--- | Version of 'fmap' that performs an 'IO' action for each event occurence.
+-- -- | Version of 'fmap' that performs an 'IO' action for each event occurence.
 mapM :: MonadIO m => (a -> m b) -> Event m a -> Prepare m (Event m b)
 mapM f Never = return Never
-mapM f e     = mkEvent addHandler'
-    where addHandler' g = addHandler e (g <=< f)
+mapM f e     = do
+    s <- newEventSource
+    r <- addHandler e (fire s <=< f)
+    return Event { source = s, remove = r }
 
 -- | Merge two event streams of the same type. Semantically, we have
 -- 
@@ -270,9 +318,17 @@ mapM f e     = mkEvent addHandler'
 -- In that case, you have to combine this with the 'orderedDuplicate' function. 
 union :: MonadIO m => Event m a -> Event m a -> Prepare m (Event m a)
 union Never e2    = return e2
-union e1    Never = return Event { addHandler = addHandler e1} -- need to be lazy here
-union e1    e2    = mkEvent addHandler'
-    where addHandler' g = addHandler e1 g >> addHandler e2 g
+union e1    Never = do
+    s <- newEventSource
+    r1 <- addHandler e1 (fire s)
+     -- need to be lazy here (why?)
+    return Event { source = s, remove = r1  }
+union e1    e2    = do
+    s <- newEventSource
+    r1 <- addHandler e1 (fire s)
+    r2 <- addHandler e2 (fire s)
+    return Event { source = s, remove = r1 >> r2 }
+
     -- FIXME: union and recursion
     -- Sometimes, events depend on themselves recursively.
     -- This is were things get hairy.
@@ -307,19 +363,21 @@ orderedDuplicate :: MonadIO m => Event m a -> Prepare m (Event m a, Event m a)
 {-# NOINLINE orderedDuplicate #-}
 orderedDuplicate Never = return (never, never)
 orderedDuplicate e     = do
-    -- unsafePerformIO $ do      -- should be safe, though, only for sharing
-        es1 <- newEventSource
-        es2 <- newEventSource
-        addHandler e $ \a -> fire es1 a >> fire es2 a
-        return (fromEventSource es1, fromEventSource es2)
+        s1 <- newEventSource
+        r1 <- addHandler e (fire s1)
+        s2 <- newEventSource
+        r2 <- addHandler e (fire s2)
+        return (Event s1 r1, Event s2 r2)
 
 -- | Pass all events that fulfill the predicate, discard the rest. Semantically,
 -- 
 -- > filter p es = [(time,a) | (time,a) <- es, p a]
 filter :: MonadIO m => (a -> Bool) -> Event m a -> Prepare m (Event m a)
 filter p Never = return Never
-filter p e     = mkEvent addHandler'
-    where addHandler' g = addHandler e $ \a -> when (p a) (g a)
+filter p e     = do
+    s <- newEventSource
+    r <- addHandler e $ \a -> when (p a) (fire s a)
+    return Event { source = s, remove = r }
 
 -- | Unpacks event values of the form @Change _@ and discards
 -- everything else.
@@ -331,6 +389,12 @@ partition f e = do
     e1 <- filter f e
     e2 <- filter (not.f) e
     return (e1, e2)
+
+nub :: (Eq a, MonadIO m) => Event m a -> Prepare m (Event m a)
+nub e = filterChanges . snd =<< mapAccum f Nothing e
+    where
+        f Nothing a = (Just a, Change a)
+        f (Just a') a = (Just a', if a' == a then Keep else Change a')
 
 -- | Debugging helper. Prints the first argument and the value of the event
 -- whenever it happens to 'stderr'.
@@ -373,28 +437,34 @@ cannot be implemented.
 
 -}
 data Behavior m a = Behavior {
-    initial :: a,       -- ^ The value that the behavior initially has.
-    changes :: Event m a
-        -- ^ An event stream recording how the behavior changes
-        -- Remember that behaviors are piecewise constant functions.
-    }
+    -- ^ The value that the behavior currently has.
+    current :: Ref a
+    -- ^ An event stream recording how the behavior changes
+    -- Remember that behaviors are piecewise constant functions.
+  , changes :: Event m a
+  }
+
+poll :: MonadIO m => Behavior m a -> Prepare m a
+poll = readRef . current
 
 -- | Smart constructor. Supply an initial value and a sequence of changes.
 -- In particular,
 -- 
 -- > initial (behavior a es) = a
 -- > changes (behavior a es) = es
-behavior :: a -> Event m a -> Behavior m a
-behavior = Behavior
+behavior :: MonadIO m => a -> Event m a -> Prepare m (Behavior m a)
+behavior a0 e = do
+    ref <- newRef a0
+    e' <- mapM (\a -> a `seq` writeRef ref a >> return a) e
+    return $ Behavior ref e'
 
 -- | The constant behavior. Semantically,
 -- 
 -- > always a = \time -> a
-always :: a -> Behavior m a
-always a = Behavior { initial = a, changes = never }
-
-    -- trigger an event whenever the value changes.
--- changes :: Behavior a -> Event a
+always :: MonadIO m => a -> Prepare m (Behavior m a)
+always a = do
+    ref <- newRef a
+    return $ Behavior ref never
 
 -- | Version of 'accumulate' that involves the 'Change' data type
 -- and performs an 'IO' action to update the value.
@@ -402,28 +472,23 @@ always a = Behavior { initial = a, changes = never }
 -- It is recommended that you use the 'accumulate' function from
 -- 'Reactive.Classes' to pick types automatically.
 accumulateChangeM :: MonadIO m => (b -> a -> m (Change a)) -> a -> Event m b -> Prepare m (Behavior m a)
-accumulateChangeM f a eb    = do
+accumulateChangeM f a eb = do
     case eb of
-        Never -> return Behavior { initial = a
-                                 , changes = Never }
+        Never -> always a
         _ -> do
-            ref <- liftIO $ newIORef a
-            eb' <- mkEvent (addHandler' ref)
-            return Behavior { initial = a
-                            , changes = eb' }
+            ref <- newRef a
+            s <- newEventSource
+            r <- addHandler eb (handler ref (fire s))
+            return Behavior { current = ref
+                            , changes = Event s r }
     where
-        addHandler' ref g = addHandler eb (handler ref g)
-    -- we need a global state
-    -- FIXME: NOINLINE pragma!
-    -- {-# NOINLINE ref #-}
-    -- ref = unsafePerformIO $ newIORef a
-        handler ref g = \b -> do
-            a   <- liftIO $ readIORef ref    -- read old value
-            ma' <- f b a            -- accumulate
+        handler ref g b = do
+            a   <- readRef ref -- read old value
+            ma' <- f b a       -- accumulate
             case ma' of
                 Keep      -> return ()
                 Change a' -> do
-                    liftIO $ writeIORef ref $! a'    -- use new value
+                    writeRef ref $! a' -- use new value
                     g a'
 
 {- | The most important way to create behaviors.
@@ -471,9 +536,9 @@ accumulateM f = accumulateChangeM (\b a -> liftM Change $ f b a)
 --         { initial = f (initial b), changes = fmap f (changes b) }
 mapB :: MonadIO m => (a -> b) -> Behavior m a -> Prepare m (Behavior m b)
 mapB f b = do
+    a <- readRef (current b)
     e' <- mapE f (changes b)
-    return Behavior { initial = f (initial b)
-                    , changes = e' }
+    behavior (f a) e'
 
 -- | The 'Applicative' instance is one most of the most important ways
 -- to combine behaviors. Semantically,
@@ -492,12 +557,18 @@ mapB f b = do
 --         go (Left  f') (f,x) = (f',x)
 --         go (Right x') (f,x) = (f,x')
 
-
 -- optimize the cases where the event never fires
 applyB :: MonadIO m => Behavior m (a -> b) -> Behavior m a -> Prepare m (Behavior m b)
-applyB (Behavior f Never) bx = mapB (f $) bx
-applyB bf (Behavior x Never) = mapB ($ x) bf
-applyB bf bx                 = mapB (uncurry ($)) =<< accumulate' go (initial bf, initial bx) =<< changes bf `merge` changes bx
+applyB bf@(Behavior _ Never) bx = do
+    f <- poll bf
+    mapB (f $) bx
+applyB bf bx@(Behavior _ Never) = do
+    x <- poll bx
+    mapB ($ x) bf
+applyB bf bx = do
+    bf0 <- poll bf
+    bx0 <- poll bx
+    mapB (uncurry ($)) =<< accumulate' go (bf0, bx0) =<< changes bf `merge` changes bx
     where
         go (Left  f') (f,x) = (f',x)
         go (Right x') (f,x) = (f,x')
@@ -509,7 +580,9 @@ applyB bf bx                 = mapB (uncurry ($)) =<< accumulate' go (initial bf
 -- | Map events while threading state.
 -- Similar to the standard 'mapAccumL' function.
 mapAccum :: MonadIO m => (acc -> x -> (acc,y)) -> acc -> Event m x -> Prepare m (Behavior m acc, Event m y)
-mapAccum f acc Never = return (always acc, never) 
+mapAccum f acc Never = do
+    b <- always acc
+    return (b, never) 
 mapAccum f acc xs    = do
     result <- accumulate' (\x (acc,_) -> f acc x) (acc,undefined) xs
     b <- mapB fst result
@@ -528,10 +601,13 @@ mapAccum f acc xs    = do
 -- 'apply' and '<*>' are subtly different. That's why we need to distinguish
 -- between behaviors and events.)
 applyE :: MonadIO m => Behavior m (a -> b) -> Event m a -> Prepare m (Event m b)
-applyE (Behavior f Never) ex    = mapE f ex
-applyE bf                 Never = return Never
-applyE bf                 ex    =
-    filterChanges . snd =<< mapAccum go (initial bf) =<< changes bf `merge` ex
+applyE bf@(Behavior _ Never) ex = do
+    f <- poll bf
+    mapE f ex
+applyE bf Never = return never
+applyE bf ex = do
+    f <- poll bf
+    filterChanges . snd =<< mapAccum go f =<< changes bf `merge` ex
     where
     go _ (Left  f) = (f, Keep)
     go f (Right x) = (f, Change $ f x)
@@ -572,11 +648,11 @@ isKeep :: Change a -> Bool
 isKeep Keep = True
 isKeep _    = False
 
-{-----------------------------------------------------------------------------
-    Test examples
-    
-    The examples return event sources that you can fire.
-------------------------------------------------------------------------------}
+-- {-----------------------------------------------------------------------------
+--     Test examples
+--     
+--     The examples return event sources that you can fire.
+-- ------------------------------------------------------------------------------}
 testCounter :: MonadIO m => Prepare m (EventSource m Int)
 testCounter = do
     es <- newEventSource
@@ -593,5 +669,14 @@ testApply = do
     es2 <- newEventSource
     let e2 = fromEventSource es2
 
-    reactimateE =<< mapE (liftIO . print) =<< flip applyE e1 =<< mapB (+) (Behavior 0 e1)
+    reactimateE =<< mapE (liftIO . print) =<< flip applyE e1 =<< mapB (+) =<< behavior 0 e2
     return (es1, es2)
+
+testApply2 :: MonadIO m => Prepare m (EventSource m Int, Prepare m ())
+testApply2 = do
+    s <- newEventSource
+    let e = fromEventSource s
+    b <- behavior 0 e
+    b' <- zipWith (<) b =<< mapB (+1) b
+    r <- reactimateE =<< mapE (liftIO . print) (changes b')
+    return (s, r)

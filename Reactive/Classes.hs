@@ -64,7 +64,7 @@ instance MonadIO m => ReactiveAccumulate m b (m (Change b)) where
 class MonadIO m => ReactiveSyntax m t where
     map :: (a -> b) -> t a -> Prepare m (t b)
     apply :: Behavior m (a -> b) -> t a -> Prepare m (t b)
-    reactimate :: t (m a) -> Prepare m ()
+    reactimate :: t (m a) -> Prepare m (Prepare m ())
 
 instance MonadIO m => ReactiveSyntax m (Event m) where
     map = mapE
