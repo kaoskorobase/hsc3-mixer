@@ -9,29 +9,21 @@ Copyright:          Copyright (c) Stefan Kersten 2008-2011
 Author:             Stefan Kersten
 Maintainer:         Stefan Kersten
 Stability:          experimental
-Homepage:           http://space.k-hornz.de/software/hsc3-server
+Homepage:           http://space.k-hornz.de/software/hsc3-mixer
 Tested-With:        GHC == 6.10.1, GHC == 6.12.3, GHC == 7.0.1
 Build-Type:         Simple
 Cabal-Version:      >= 1.9.2
 
 Library
     Exposed-Modules:
-        Data.Signal.SF
-        Data.Signal.SF.Base
-        Data.Signal.SF.Event
-        Reactive
-        Reactive.Classes
-        Reactive.Core
         Sound.SC3.Mixer
         Sound.SC3.Mixer.SynthDefs
         Sound.SC3.Server.Monad.Command
         Sound.SC3.Server.Monad.Send
-        -- Sound.SC3.Server.Reactive
     Build-Depends:
         base >= 4 && < 5
       , bytestring
       , bzlib
-      , CCA >= 0.1
       , containers
       , failure
       , hosc >= 0.10
@@ -46,43 +38,24 @@ Library
     Ghc-Prof-Options:
         -W -auto-all
 
-Executable hsc3-mixer
-    Main-Is: mixer.hs
-    Ghc-Options:      -W -threaded -rtsopts
-    Ghc-Prof-Options: -W -threaded -rtsopts -auto-all
-    Build-Depends:
-        base >= 4 && < 5
-      , bytestring
-      , bzlib
-      , CCA >= 0.1
-      , containers
-      , failure
-      , hosc >= 0.10
-      , hsc3 >= 0.10
-      , hsc3-process >= 0.6
-      , hsc3-server >= 0.3
-      , random
-      , SHA2
-      , transformers
-
-Executable hsc3-mixer-sf
-    Main-Is: mixer-sf.hs
-    Ghc-Options:      -W -threaded -rtsopts
-    Ghc-Prof-Options: -W -threaded -rtsopts -auto-all
-    Build-Depends:
-        base >= 4 && < 5
-      , bytestring
-      , bzlib
-      , CCA >= 0.1
-      , containers
-      , failure
-      , hosc >= 0.10
-      , hsc3 >= 0.10
-      , hsc3-process >= 0.6
-      , hsc3-server >= 0.3
-      , random
-      , SHA2
-      , transformers
+--Executable hsc3-mixer
+    --Main-Is: mixer.hs
+    --Ghc-Options:      -W -threaded -rtsopts
+    --Ghc-Prof-Options: -W -threaded -rtsopts -auto-all
+    --Build-Depends:
+        --base >= 4 && < 5
+      --, bytestring
+      --, bzlib
+      --, containers
+      --, failure
+      --, hosc >= 0.10
+      --, hsc3 >= 0.10
+      --, hsc3-process >= 0.6
+      --, hsc3-server >= 0.3
+      --, random
+      --, reactive-banana >= 0.5.0
+      --, SHA2
+      --, transformers
 
 Executable hsc3-example
     Main-Is: example.hs
@@ -104,22 +77,4 @@ Executable hsc3-example
 
 Source-Repository head
     Type:       git
-    Location:   git://github.com/kaoskorobase/hsc3-server.git
-
--- Test-Suite hsc3-server-test
---     Type: exitcode-stdio-1.0
---     Main-Is: test.hs
---     Other-Modules:
---         Sound.SC3.Server.Allocator.Test
---         Sound.SC3.Server.Allocator.Range.Test
---     Build-Depends:
---         base
---       , bitset >= 1.0
---       , deepseq >= 1.1
---       , failure >= 0.1
---       , QuickCheck >= 2.4
---       , random >= 1.0
---       , test-framework
---       , test-framework-quickcheck2
---       , transformers >= 0.2
---     Hs-Source-Dirs: tests, .
+    Location:   git://github.com/kaoskorobase/hsc3-mixer.git
