@@ -43,14 +43,12 @@ module Sound.SC3.Server.Monad.Send
 
 import           Control.Applicative
 import           Control.Arrow (second)
-import           Control.Failure (Failure(..))
 import           Control.Monad (ap, liftM, when)
 import           Control.Monad.IO.Class (MonadIO(..))
 import qualified Control.Monad.Trans.Class as Trans
 import           Control.Monad.Trans.State (StateT(..))
 import qualified Control.Monad.Trans.State as State
 import           Data.IORef
-import           Sound.SC3.Server.Allocator (AllocFailure)
 import           Sound.SC3.Server.Monad (MonadIdAllocator, MonadSendOSC(..), MonadServer, ServerT)
 import qualified Sound.SC3.Server.Monad as M
 import qualified Sound.SC3.Server.State as State
@@ -103,9 +101,6 @@ newtype SendT m a = SendT (StateT (State m) (ServerT m) a)
 instance MonadIO m => MonadServer (SendT m) where
     serverOptions = liftServer M.serverOptions
 
-instance MonadIO m => Failure AllocFailure (SendT m) where
-    failure = liftServer . failure
-
 instance MonadIO m => MonadIdAllocator (SendT m) where
     rootNodeId = liftServer M.rootNodeId
     alloc = liftServer . M.alloc
@@ -143,7 +138,7 @@ liftServer = SendT . Trans.lift
 
 -- | Allocation action newtype wrapper.
 newtype AllocT m a = AllocT (ServerT m a)
-                     deriving (Applicative, Failure AllocFailure, MonadIdAllocator, Functor, Monad)
+                     deriving (Applicative, MonadIdAllocator, Functor, Monad)
 
 -- | Representation of a deferred server resource.
 --
